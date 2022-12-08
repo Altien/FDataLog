@@ -16,5 +16,6 @@
     <Compile Include="Parser.fs" />
     <Compile Include="Lexer.fs" />
     <Compile Include="Library.fs" />
+    <Compile Include="BottomUp.fs" />
   </ItemGroup>
 </Project>
