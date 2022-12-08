@@ -1,0 +1,77 @@
+{
+
+// Opens methods related to fslex.exe
+open FSharp.Text.Lexing
+open Parser
+
+let lexeme (lexbuf: LexBuffer<_>) = new System.String(lexbuf.Lexeme)
+
+let print_location (lexbuf: LexBuffer<_>) =
+    let pos = lexbuf.StartPos
+    sprintf "at line %d, column %d" pos.pos_lnum (pos.pos_cnum - pos.pos_bol)
+
+let lexing_error (error: string) (lexbuf: LexBuffer<_>) =
+    Printf.eprintf "%s %s, token '%s'@." error (print_location lexbuf) (lexeme lexbuf)
+    raise (FSharp.Text.Parsing.RecoverableParseError)
+
+let new_line (lexbuf: LexBuffer<_>) = 
+  lexbuf.StartPos <- lexbuf.StartPos.NextLine
+
+}
+
+let numeric = ['0' - '9']
+let non_zero_numeric = ['1' - '9']
+let number = ( '0' | ( non_zero_numeric numeric *) )
+let lower_alpha = ['a' - 'z']
+let upper_alpha = ['A' - 'Z']
+let alpha_numeric = ( lower_alpha | upper_alpha | numeric | '_' )
+
+let upper_word = upper_alpha alpha_numeric*
+let lower_word = lower_alpha alpha_numeric*
+let single_quoted = "'" ([^ '''] | "\\'")+ "'"
+let one_line_comment = '%' [^ '\n' '\r']* ('\n' | "\r\n")
+let multi_line_comment = "/*" ( [^ '*'] | ('*' [^ '/']) )* "*/"
+let multi_line_comment_unclosed = "/*" ( [^ '*'] | ('*' [^ '/']) )* eof
+
+
+rule token =
+    parse
+      | [' ' '\t' '\r']              { token lexbuf } (* skip blanks *)
+      | ['\n']                       { new_line lexbuf;
+                                       token lexbuf } (* skip new lines *)
+      | "not"                        { NOT }
+      | one_line_comment             { new_line lexbuf;
+                                       token lexbuf } (* skip comment *)
+      | multi_line_comment           { String.iter (function
+                                         | '\n' -> new_line lexbuf
+                                         | _ -> ()
+                                       ) (lexeme lexbuf) ;
+                                       token lexbuf } (* skip comment *)
+      | multi_line_comment_unclosed  { lexing_error "Unclosed Comment" lexbuf }
+          (* end of input - for channels, strings, ... *)
+      | eof                          { EOI }
+      | lower_word                   { LOWER_WORD(lexeme lexbuf) }
+      | upper_word                   { UPPER_WORD(lexeme lexbuf) }
+      | single_quoted                { SINGLE_QUOTED(lexeme lexbuf) }
+      | number                       { INT(lexeme lexbuf) }
+      | '('                          { LEFT_PARENTHESIS }
+      | ')'                          { RIGHT_PARENTHESIS }
+      | '.'                          { DOT }
+      | ":-"                         { IF }
+      | "<-"                         { IF }
+      | ","                          { COMMA }
+      | _                            { lexing_error "Invalid Input" lexbuf }
+
+// Regular expressions
+// let whitespace = [' ' '\t' ]
+// let newline = ('\n' | '\r' '\n')
+
+// rule tokenstream = parse
+// // --------------------------
+// | "hello" 		{ Parser.HELLO }
+// // --------------------------
+// | whitespace	{ tokenstream lexbuf }
+// | newline	{ newline lexbuf; tokenstream lexbuf }
+// // --------------------------
+// | _    		{ failwith ("ParseError" + LexBuffer<_>.LexemeString lexbuf) }
+// | eof   	{ Parser.EOF }
