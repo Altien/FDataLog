@@ -302,14 +302,43 @@ type Datalog<'T when 'T: equality> private () =
                     | Var i -> Var(i + o_t')
                     | Const _ -> t')
                 lit
-    
+
     static member remove_first_subst subst (clause, offset) =
         assert (Array.length clause > 1)
         let a = Array.create (Array.length clause - 1) [||]
         a[0] <- Datalog<'T>.subst_literal subst (clause[0], offset)
+
         for i = 1 to Array.length clause - 2 do
             a[i] <- Datalog<'T>.subst_literal subst (clause[i + 1], offset)
-        done
+
         a
-    
-    
+
+    static member quantify1 f = let v1 = Datalog<'T>.mk_var 1 in f v1
+
+    static member quantify2 f =
+        let v1 = Datalog<'T>.mk_var 1 in
+        let v2 = Datalog<'T>.mk_var 2 in
+        f v1 v2
+
+    static member quantify3 f =
+        let v1 = Datalog<'T>.mk_var 1 in
+        let v2 = Datalog<'T>.mk_var 2 in
+        let v3 = Datalog<'T>.mk_var 3 in
+        f v1 v2 v3
+
+    static member quantify4 f =
+        let v1 = Datalog<'T>.mk_var 1 in
+        let v2 = Datalog<'T>.mk_var 2 in
+        let v3 = Datalog<'T>.mk_var 3 in
+        let v4 = Datalog<'T>.mk_var 4 in
+        f v1 v2 v3 v4
+
+    static member quantifyn n f =
+        let rec mk_vars =
+            function
+            | 0 -> []
+            | n -> Datalog<'T>.mk_var n :: mk_vars (n - 1)
+
+        assert (n >= 0)
+
+        mk_vars n |> f
