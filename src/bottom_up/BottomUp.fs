@@ -359,3 +359,74 @@ type Datalog<'T when 'T: equality> private () =
         assert (n >= 0)
 
         mk_vars n |> f
+
+type TermHashtable<'T, 'U when 'T: equality and 'U: equality> = Dictionary<term<'T>, 'U>
+
+let iter_table (d: Dictionary<'a, 'b>) = Seq.zip d.Keys d.Values
+
+type DataSet<'T, 'U when 'T: equality and 'U: equality> = HashSet<literal<'T> * 'U>
+
+type IndexNode<'T, 'U when 'T: equality and 'U: equality> =
+    | Node of DataSet<'T, 'U> * TermHashtable<'T, IndexNode<'T, 'U>>
+
+let create_node<'T, 'U when 'T: equality and 'U: equality> () =
+    Node(DataSet<'T, 'U>(), TermHashtable<'T, IndexNode<'T, 'U>>())
+
+type Index<'T, 'U when 'T: equality and 'U: equality>() =
+    member val node = create_node ()
+
+    member this.Copy(Node(set, h)) =
+        let set' = DataSet(set)
+        let h' = TermHashtable(h)
+        iter_table h |> Seq.iter (fun (k, t') -> h'.Add(k, this.Copy(t')))
+        Node(set', h')
+
+    static member term_to_char t =
+        match t with
+        | Const _ -> t
+        | Var _ -> Var 0
+
+    member this.Add (literal: literal<'T>) elt =
+        let len = Array.length literal
+
+        let rec add t i =
+            match t, i with
+            | Node(set, _subtries), i when i = len -> set.Add((literal, elt))
+            | Node(_, subtries), i ->
+                let c = Index<'T, 'U>.term_to_char literal[i]
+                let subtrie = subtries.GetValueOrDefault(c, create_node ())
+                subtries.TryAdd(c, subtrie) |> ignore
+                add subtrie (i + 1)
+
+        add this.node 0
+
+    member this.RetrieveGeneralizations k acc o_t (literal, o_lit) =
+        let len = Array.length literal in
+
+        let rec search t i acc =
+            match t, i with
+            | Node(s, _), i when i = len ->
+                s
+                |> Seq.cast<literal<'T> * 'U>
+                |> Seq.fold
+                    (fun (lit', elt) acc ->
+                        try
+                            let subst = Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
+                            k acc lit' elt subst
+                        with UnifFailure ->
+                            acc)
+                    acc
+            | Node(_, subtries), i ->
+                if Datalog<'T>.is_var literal[i] then
+                    try_with subtries acc (Var 0) i
+                else
+                    let acc' = try_with subtries acc (Var 0) i in try_with subtries acc' literal[i] i
+
+        and try_with (subtries: TermHashtable<'T, IndexNode<'T, 'U>>) acc sym i =
+            try
+                let t' = subtries.[sym]
+                search t' (i + 1) acc
+            with :? KeyNotFoundException ->
+                acc
+
+        search this.node 0 acc
