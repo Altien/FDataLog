@@ -32,18 +32,35 @@ module Univ =
         | None -> false
         | Some _ -> true
 
-type term<'T> =
+[<CustomEquality; NoComparison>]
+type term<'T when 'T: equality> =
     | Var of int
     | Const of 'T
 
+    override this.Equals other =
+        match other with
+        | :? term<'T> as other ->
+            match (this, other) with
+            | Var i, Var j -> i = j
+            | Const s1, Const s2 -> s1 = s2
+            | _ -> false
+        | _ -> false
 
-type literal<'T> = term<'T> array
-type clause<'T> = literal<'T> array
+    override this.GetHashCode() =
+        match this with
+        | Var i -> i
+        | Const s -> hash s
 
-type soft_lit<'T> = 'T * term<'T> list
-type soft_clause<'T> = soft_lit<'T> * soft_lit<'T> list
 
-type subst<'T> =
+type literal<'T when 'T: equality> = term<'T> array
+
+
+type clause<'T when 'T: equality> = literal<'T> array
+
+type soft_lit<'T when 'T: equality> = 'T * term<'T> list
+type soft_clause<'T when 'T: equality> = soft_lit<'T> * soft_lit<'T> list
+
+type subst<'T when 'T: equality> =
     | SubstEmpty
     | SubstBind of (int * int * term<'T> * int * subst<'T>)
 
