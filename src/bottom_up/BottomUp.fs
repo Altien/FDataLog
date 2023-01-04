@@ -366,6 +366,9 @@ let iter_table (d: Dictionary<'a, 'b>) = Seq.zip d.Keys d.Values
 
 type DataSet<'T, 'U when 'T: equality and 'U: equality> = HashSet<literal<'T> * 'U>
 
+let fold_dataset f s =
+    Seq.cast<literal<'T> * 'U> >> Seq.fold f s
+
 type IndexNode<'T, 'U when 'T: equality and 'U: equality> =
     | Node of DataSet<'T, 'U> * TermHashtable<'T, IndexNode<'T, 'U>>
 
@@ -400,27 +403,34 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         add this.node 0
 
+    member private this.Unify f k o_t (literal, o_lit) (acc: term<'T> * int) (lit': (literal<'T>), elt) =
+        try
+            let subst = f (lit', o_t) (literal, o_lit) // Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
+            k acc lit' elt subst
+        with UnifFailure ->
+            acc
+        
+    member private this.Matching =
+        this.Unify (fun a b -> Datalog<'T>.matching(a, b))
+    
+    member private this.Unification =
+        this.Unify (fun a b -> Datalog<'T>.unify(a, b))
+    
+    member private this.AlphaEquiv =
+        this.Unify (fun a b -> Datalog<'T>.alpha_equiv(a, b))
+
     member this.RetrieveGeneralizations k acc o_t (literal, o_lit) =
         let len = Array.length literal in
 
         let rec search t i acc =
             match t, i with
-            | Node(s, _), i when i = len ->
-                s
-                |> Seq.cast<literal<'T> * 'U>
-                |> Seq.fold
-                    (fun (lit', elt) acc ->
-                        try
-                            let subst = Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
-                            k acc lit' elt subst
-                        with UnifFailure ->
-                            acc)
-                    acc
+            | Node(s, _), i when i = len -> fold_dataset (this.Matching k o_t (literal, o_lit)) acc s
             | Node(_, subtries), i ->
                 if Datalog<'T>.is_var literal[i] then
                     try_with subtries acc (Var 0) i
                 else
-                    let acc' = try_with subtries acc (Var 0) i in try_with subtries acc' literal[i] i
+                    let acc' = try_with subtries acc (Var 0) i
+                    try_with subtries acc' literal[i] i
 
         and try_with (subtries: TermHashtable<'T, IndexNode<'T, 'U>>) acc sym i =
             try
@@ -430,3 +440,90 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
                 acc
 
         search this.node 0 acc
+
+    member this.RetrieveSpecializations k acc o_t (literal, o_lit) =
+        let len = Array.length literal
+
+        let rec search t i acc =
+            match t, i with
+            | Node(s, _), i when i = len -> fold_dataset (this.Matching k o_t (literal, o_lit)) acc s
+            | Node(_, subtries), i ->
+                if Datalog<'T>.is_var literal[i] then
+                    subtries
+                    |> iter_table
+                    |> Seq.fold (fun acc (_, subtrie) -> search subtrie (i + 1) acc) acc
+                else
+                    try_with subtries acc literal[i] i
+
+        and try_with (subtries: TermHashtable<'T, IndexNode<'T, 'U>>) acc sym i =
+            try
+                let t' = subtries.[sym]
+                search t' (i + 1) acc
+            with :? KeyNotFoundException ->
+                acc
+
+        search this.node 0 acc
+
+    /// Fold on content that is unifiable with given literal
+    member this.RetrieveUnify k acc o_t (literal, o_lit) =
+        let len = Array.length literal
+
+        let rec search t i acc =
+            match t, i with
+            | Node(set, _), i when i = len ->
+                fold_dataset (this.Unification k o_t (literal, o_lit))
+                    acc
+                    set
+            | Node(_, subtries), i ->
+                if Datalog<'T>.is_var literal[i] then (* fold on all subtries *)
+                    subtries
+                    |> iter_table
+                    |> Seq.fold (fun acc (_, subtrie) -> search subtrie (i + 1) acc) acc
+                else (* try both subtrie with same symbol, and subtrie with variable *)
+                    let acc' = try_with subtries acc literal[i] i
+                    try_with subtries acc' (Var 0) i
+        (* try to search in the subtree annotated with given symbol/var *)
+        and try_with subtries acc sym i =
+            try
+                let t' = subtries.[sym]
+                search t' (i + 1) acc
+            with :? KeyNotFoundException ->
+                acc
+
+        search this.node 0 acc
+
+    member this.RetrieveRenaming k acc o_t (literal, o_lit) =
+        let len = Array.length literal
+
+        let rec search t i acc =
+            match t, i with
+            | Node(set, _), i when i = len ->
+                fold_dataset
+                    (this.AlphaEquiv k o_t (literal, o_lit))
+                    acc
+                    set
+            | Node(_, subtries), i ->
+                let c =
+                    match literal[i] with
+                    | Const _ -> literal[i]
+                    | Var _ -> Var 0
+
+                try
+                    let t' = subtries.[c]
+                    search t' (i + 1) acc
+                with :? KeyNotFoundException ->
+                    acc in
+
+        search this.node 0 acc
+
+    member private this.Fold k acc (Node (set, subtries)) =
+        let acc =
+            fold_dataset
+                (fun acc (lit, elt) -> k acc lit elt)
+                acc set
+        subtries
+        |> iter_table
+        |> Seq.fold (fun acc (_, subtrie) -> this.Fold k acc subtrie) acc
+
+    member this.Size () =
+        this.Fold (fun i _ _ -> i + 1) 0 this.node
