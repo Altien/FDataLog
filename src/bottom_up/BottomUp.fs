@@ -171,8 +171,8 @@ type Datalog<'T when 'T: equality> private () =
 
         check_head 1
 
-    static member is_fact clause =
-        Array.length clause = 1 && Datalog<'T>.is_ground clause
+    static member is_fact (clause : clause<'T>) =
+        Array.length clause = 1 && Datalog<'T>.is_ground clause[0]
 
     static member eq_clause c1 c2 =
         if Array.length c1 <> Array.length c2 then
