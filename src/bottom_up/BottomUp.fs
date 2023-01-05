@@ -171,7 +171,7 @@ type Datalog<'T when 'T: equality> private () =
 
         check_head 1
 
-    static member is_fact (clause : clause<'T>) =
+    static member is_fact(clause: clause<'T>) =
         Array.length clause = 1 && Datalog<'T>.is_ground clause[0]
 
     static member eq_clause c1 c2 =
@@ -403,21 +403,18 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         add this.node 0
 
-    member private this.Unify f k o_t (literal, o_lit) (acc: term<'T> * int) (lit': (literal<'T>), elt) =
+    member private this.Unify f k o_t (literal, o_lit) acc (lit': (literal<'T>), elt) =
         try
             let subst = f (lit', o_t) (literal, o_lit) // Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
             k acc lit' elt subst
         with UnifFailure ->
             acc
-        
-    member private this.Matching =
-        this.Unify (fun a b -> Datalog<'T>.matching(a, b))
-    
-    member private this.Unification =
-        this.Unify (fun a b -> Datalog<'T>.unify(a, b))
-    
-    member private this.AlphaEquiv =
-        this.Unify (fun a b -> Datalog<'T>.alpha_equiv(a, b))
+
+    member private this.Matching = this.Unify(fun a b -> Datalog<'T>.matching (a, b))
+
+    member private this.Unification = this.Unify(fun a b -> Datalog<'T>.unify (a, b))
+
+    member private this.AlphaEquiv = this.Unify(fun a b -> Datalog<'T>.alpha_equiv (a, b))
 
     member this.RetrieveGeneralizations k acc o_t (literal, o_lit) =
         let len = Array.length literal in
@@ -470,10 +467,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         let rec search t i acc =
             match t, i with
-            | Node(set, _), i when i = len ->
-                fold_dataset (this.Unification k o_t (literal, o_lit))
-                    acc
-                    set
+            | Node(set, _), i when i = len -> fold_dataset (this.Unification k o_t (literal, o_lit)) acc set
             | Node(_, subtries), i ->
                 if Datalog<'T>.is_var literal[i] then (* fold on all subtries *)
                     subtries
@@ -497,11 +491,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         let rec search t i acc =
             match t, i with
-            | Node(set, _), i when i = len ->
-                fold_dataset
-                    (this.AlphaEquiv k o_t (literal, o_lit))
-                    acc
-                    set
+            | Node(set, _), i when i = len -> fold_dataset (this.AlphaEquiv k o_t (literal, o_lit)) acc set
             | Node(_, subtries), i ->
                 let c =
                     match literal[i] with
@@ -516,14 +506,171 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         search this.node 0 acc
 
-    member private this.Fold k acc (Node (set, subtries)) =
-        let acc =
-            fold_dataset
-                (fun acc (lit, elt) -> k acc lit elt)
-                acc set
+    member private this.Fold k acc (Node(set, subtries)) =
+        let acc = fold_dataset (fun acc (lit, elt) -> k acc lit elt) acc set
+
         subtries
         |> iter_table
         |> Seq.fold (fun acc (_, subtrie) -> this.Fold k acc subtrie) acc
 
-    member this.Size () =
+    member this.Size() =
         this.Fold (fun i _ _ -> i + 1) 0 this.node
+
+
+exception UnsafeClause
+
+type ClauseHashtable<'T, 'U when 'T: equality and 'U: equality> = Dictionary<clause<'T>, 'U>
+
+[<CustomEquality; NoComparison>]
+type explanation<'T when 'T: equality> =
+    | Axiom
+    | Resolution of clause<'T> * literal<'T>
+    | ExtExplanation of string * Univ.t
+
+    override this.Equals other =
+        match other with
+        | :? explanation<'T> as other ->
+            match (this, other) with
+            | Axiom, Axiom -> true
+            | Resolution(c1, l1), Resolution(c2, l2) -> c1 = c2 && l1 = l2
+            | ExtExplanation(s1, _), ExtExplanation(s2, _) -> s1 = s2
+            | _ -> false
+        | _ -> false
+
+    override this.GetHashCode() =
+        match this with
+        | ExtExplanation(s, _) -> hash s
+        | _ -> hash this
+
+type fact_handler<'T when 'T: equality> = literal<'T> -> unit
+type goal_handler<'T when 'T: equality> = literal<'T> -> unit
+
+type user_fun<'T when 'T: equality> = soft_lit<'T> -> soft_lit<'T>
+
+type queue_item<'T when 'T: equality> =
+    | AddClause of clause<'T> * explanation<'T>
+    | AddGoal of literal<'T>
+
+type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_handlers, all_facts, goal_handlers, funs) =
+    member val all = all
+    member val facts = facts
+    member val goals = goals
+    member val selected = selected
+    member val heads = heads
+    member val fact_handlers = fact_handlers
+    member val all_facts = all_facts
+    member val goal_handlers = goal_handlers
+    member val funs = funs
+    member val queue = Queue<queue_item<'T>>()
+
+    static member Default() =
+        let all = ClauseHashtable<'T, explanation<'T>>()
+        let facts = Index<'T, clause<'T>>()
+        let goals = Index<'T, unit>()
+        let selected = Index<'T, clause<'T>>()
+        let heads = Index<'T, clause<'T>>()
+        let fact_handlers = Dictionary<'T, fact_handler<'T> list>()
+        let all_facts: fact_handler<'T> list = []
+        let goal_handlers: goal_handler<'T> list = []
+        let funs = Dictionary<'T, user_fun<'T>>()
+        Database(all, facts, goals, selected, heads, fact_handlers, all_facts, goal_handlers, funs)
+
+    member this.Copy() =
+        Database(
+            this.all,
+            this.facts,
+            this.goals,
+            this.selected,
+            this.heads,
+            this.fact_handlers,
+            this.all_facts,
+            this.goal_handlers,
+            this.funs
+        )
+
+    member this.Contains clause =
+        assert Datalog<'T>.check_safe clause
+        all.ContainsKey(clause)
+
+    member this.RewriteClause(clause: clause<'T>) : clause<'T> =
+        let rec rewrite_lit (lit: literal<'T>) =
+            match lit[0] with
+            | Var _ -> failwith "Only const supported"
+            | Const s ->
+                let lit' =
+                    try
+                        let f = funs.[s]
+                        let lit' = lit |> Datalog<'T>.open_literal |> f
+                        let lit' = Datalog<'T>.of_soft_lit lit'
+                        lit'
+                    with :? KeyNotFoundException ->
+                        lit
+
+                if (LanguagePrimitives.PhysicalEquality lit lit') || lit = lit' then
+                    lit'
+                else
+                    rewrite_lit lit'
+
+        Array.map rewrite_lit clause
+
+    member this.AddClause clause explanation =
+        let clause = this.RewriteClause clause
+        let already_present = this.Contains(clause)
+        all.Add(clause, explanation)
+
+        if already_present then
+            ()
+        else if Datalog<'T>.is_fact clause then
+            (facts.Add clause[0] clause |> ignore
+
+             let s =
+                 match clause[0][0] with
+                 | Const s -> s
+                 | Var _ -> failwith "First term must be constant"
+
+             let call_handler h =
+                 try
+                     h clause[0]
+                 with e ->
+                     Printf.eprintf "Datalog: exception while calling handler for %s@." (s.ToString())
+                     raise e
+
+             try
+                 let l = fact_handlers.[s]
+                 List.iter call_handler l
+             with :? KeyNotFoundException ->
+                 ()
+
+             List.iter call_handler all_facts
+
+             selected.RetrieveGeneralizations
+                 (fun () _ clause' subst ->
+                     let clause'' = Datalog<'T>.remove_first_subst subst (clause', 0)
+                     let explanation = Resolution(clause', clause[0])
+                     this.queue.Enqueue(AddClause(clause'', explanation)))
+                 ()
+                 0
+                 (clause[0], 0))
+        else
+            (assert (Array.length clause > 1)
+             let offset = Datalog<'T>.offset clause
+
+             goals.RetrieveUnify
+                 (fun () _goal () subst ->
+                     let new_goal = Datalog<'T>.subst_literal subst (clause[1], 0)
+                     this.queue.Enqueue(AddGoal new_goal))
+                 ()
+                 offset
+                 (clause[0], 0)
+
+             selected.Add clause[1] clause |> ignore
+             heads.Add clause[0] clause |> ignore
+
+             facts.RetrieveSpecializations
+                 (fun () fact _ subst ->
+                     let clause' = Datalog<'T>.remove_first_subst subst (clause, 0)
+                     let explanation = Resolution(clause, fact)
+                     this.queue.Enqueue(AddClause(clause', explanation)))
+                 ()
+                 offset
+                 (clause[1], 0))
