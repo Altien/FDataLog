@@ -2,6 +2,8 @@ module BottomUp
 
 open System.Collections.Generic
 
+exception Exit
+
 module Univ =
     type t = unit -> unit
 
@@ -403,20 +405,58 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         add this.node 0
 
-    member private this.Unify f k o_t (literal, o_lit) acc (lit': (literal<'T>), elt) =
-        try
-            let subst = f (lit', o_t) (literal, o_lit) // Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
-            k acc lit' elt subst
-        with UnifFailure ->
-            acc
+    // member private this.Unify<'a>
+    //     (f: (literal<'T> * int -> literal<'T> * int -> subst<'T>))
+    //     (k: ('a -> literal<'T> -> 'U -> subst<'T> -> 'a))
+    //     o_t
+    //     (literal, o_lit)
+    //     (acc: 'a)
+    //     (lit': (literal<'T>), elt)
+    //     =
+    //     try
+    //         let subst = f (lit', o_t) (literal, o_lit)
+    //         k acc lit' elt subst
+    //     with UnifFailure ->
+    //         acc
 
-    member private this.Matching = this.Unify(fun a b -> Datalog<'T>.matching (a, b))
+    // member private this.Matching =
+    //     let f = fun a b -> Datalog<'T>.matching (a, b)
+    //     this.Unify<'a>(f)
 
-    member private this.Unification = this.Unify(fun a b -> Datalog<'T>.unify (a, b))
+    // member private this.Unification = this.Unify(fun a b -> Datalog<'T>.unify (a, b))
 
-    member private this.AlphaEquiv = this.Unify(fun a b -> Datalog<'T>.alpha_equiv (a, b))
+    // member private this.AlphaEquiv = this.Unify(fun a b -> Datalog<'T>.alpha_equiv (a, b))
 
-    member this.RetrieveGeneralizations k acc o_t (literal, o_lit) =
+    member private this.Matching k o_t (literal, o_lit) =
+        (fun acc (lit', elt) ->
+            try
+                let subst = Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
+                k acc lit' elt subst
+            with UnifFailure ->
+                acc)
+
+    member private this.Unification (k: ('a -> literal<'T> -> 'U -> subst<'T> -> 'a)) o_t (literal, o_lit) =
+        (fun acc (lit', elt) ->
+            try
+                let subst = Datalog<'T>.unify ((lit', o_t), (literal, o_lit))
+                k acc lit' elt subst
+            with UnifFailure ->
+                acc)
+
+    member private this.AlphaEquiv k o_t (literal, o_lit) =
+        (fun acc (lit', elt) ->
+            try
+                let subst = Datalog<'T>.alpha_equiv ((lit', o_t), (literal, o_lit))
+                k acc lit' elt subst
+            with UnifFailure ->
+                acc)
+
+    member this.RetrieveGeneralizations
+        (k: ('a -> literal<'T> -> 'U -> subst<'T> -> 'a))
+        (acc: 'a)
+        (o_t: int)
+        (literal: literal<'T>, o_lit: int)
+        =
         let len = Array.length literal in
 
         let rec search t i acc =
@@ -651,6 +691,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
                  ()
                  0
                  (clause[0], 0))
+            |> ignore
         else
             (assert (Array.length clause > 1)
              let offset = Datalog<'T>.offset clause
@@ -674,3 +715,80 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
                  ()
                  offset
                  (clause[1], 0))
+
+    member this.AddGoal literal =
+        try
+            let offset = Datalog<'T>.offset [| literal |]
+            goals.RetrieveRenaming (fun () _ _ _ -> raise Exit) () offset (literal, 0)
+            List.iter (fun h -> h literal) goal_handlers
+            goals.Add literal () |> ignore
+
+            heads.RetrieveUnify
+                (fun () _head clause subst ->
+                    let new_goal = Datalog<'T>.subst_literal subst (clause[1], offset)
+                    this.queue.Enqueue(AddGoal new_goal))
+                ()
+                offset
+                (literal, 0)
+        with Exit ->
+            ()
+
+    member this.ProcessItems item =
+        let empty = this.queue.Count = 0
+        this.queue.Enqueue item
+
+        let process_item item =
+            match item with
+            | AddClause(c, explanation) -> this.AddClause c explanation
+            | AddGoal goal -> this.AddGoal goal
+
+        if empty then
+            while not (this.queue.Count = 0) do
+                let item = this.queue.Dequeue()
+                process_item item
+
+    member this.Add(clause, ?expl) =
+        if not (Datalog<'T>.check_safe clause) then
+            raise UnsafeClause
+
+        let expl = Option.defaultValue Axiom expl
+        this.ProcessItems(AddClause(clause, expl))
+
+    member this.AddFact(lit, ?expl) =
+        if not (Datalog<'T>.is_ground lit) then
+            raise UnsafeClause
+
+        let expl = Option.defaultValue Axiom expl
+        this.ProcessItems(AddClause([| lit |], expl))
+
+    member this.Goal lit = this.ProcessItems(AddGoal lit)
+
+    member this.Match pattern handler =
+        facts.RetrieveSpecializations (fun () fact _ _subst -> handler fact) () 0 (pattern, 1)
+
+    member this.Query pattern vars k =
+        facts.RetrieveSpecializations
+            (fun () _lit _ subst ->
+                let terms =
+                    List.map
+                        (fun i ->
+                            let v = Datalog<'T>.mk_var i
+                            let t, _ = Datalog<'T>.deref subst v 1
+
+                            match t with
+                            | Var _ -> failwith "Should be ground"
+                            | Const s -> s)
+                        vars
+
+                k terms)
+            ()
+            0
+            (pattern, 1)
+
+    member this.Size =
+        facts.Size () + selected.Size ()
+    
+    member this.Fold k acc =
+        this.all
+        |> iter_table 
+        |> Seq.fold k acc
