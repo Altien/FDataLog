@@ -546,7 +546,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         search this.node 0 acc
 
-    member private this.Fold k acc (Node(set, subtries)) =
+    member this.Fold k acc (Node(set, subtries)) =
         let acc = fold_dataset (fun acc (lit, elt) -> k acc lit elt) acc set
 
         subtries
@@ -598,8 +598,8 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
     member val selected = selected
     member val heads = heads
     member val fact_handlers = fact_handlers
-    member val all_facts = all_facts
-    member val goal_handlers = goal_handlers
+    member val all_facts = all_facts with get, set
+    member val goal_handlers = goal_handlers with get, set
     member val funs = funs
     member val queue = Queue<queue_item<'T>>()
 
@@ -792,3 +792,65 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
         this.all
         |> iter_table 
         |> Seq.fold k acc
+    
+    member this.AddFun s f =
+        if funs.ContainsKey s then
+            failwith (sprintf "Function already defined for symbol %s" (s.ToString()))
+        else
+            funs.Remove(s) |> ignore
+            funs.Add(s, f)
+    
+    member this.SubscribeFact symbol handler =
+        let l =
+            try
+                fact_handlers.[symbol]
+            with :? KeyNotFoundException ->
+                []
+        fact_handlers.Remove(symbol) |> ignore
+        fact_handlers.Add(symbol, (handler :: l))
+    
+    member this.SubscribeAllFacts handler =
+        this.all_facts <- (handler :: all_facts)
+    
+    member this.SubscribeGoal handler =
+        this.goal_handlers <- (handler :: goal_handlers)
+    
+    member this.Goals k =
+        goals.Fold (fun () goal () -> k goal) ()
+    
+    member this.Explain fact =
+        let explored = ClauseHashtable()
+        let s = new Dictionary<literal<'T>, unit>()
+
+        let rec search clause =
+            if explored.ContainsKey(clause) then ()
+            else
+                explored.Add(clause, ())
+                let explanation = all.[clause]
+                match explanation with
+                | Axiom when Datalog<'T>.is_fact clause ->
+                    s.Remove(clause[0]) |> ignore
+                    s.Add(clause[0], ())
+                | ExtExplanation _
+                | Axiom -> ()
+                | Resolution (clause, fact) ->
+                    search clause;
+                    search [|fact|]
+
+        search [|fact|];
+        iter_table s
+        |> Seq.fold (fun acc (lit, ()) -> lit :: acc) []
+
+    member this.Premises fact =
+        let rec search acc clause =
+            let explanation = all.[clause]
+            match explanation with
+            | ExtExplanation _
+            | Axiom -> clause, acc
+            | Resolution (clause, fact) ->
+                let acc = fact :: acc
+                search acc clause
+        search [] [|fact|]
+
+    member this.Explanations clause =
+        all.[clause]
