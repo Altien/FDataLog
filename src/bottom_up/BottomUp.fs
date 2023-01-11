@@ -785,72 +785,209 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
             0
             (pattern, 1)
 
-    member this.Size =
-        facts.Size () + selected.Size ()
-    
+    member this.Size = facts.Size() + selected.Size()
+
     member this.Fold k acc =
-        this.all
-        |> iter_table 
-        |> Seq.fold k acc
-    
+        this.all |> iter_table |> Seq.fold k acc
+
     member this.AddFun s f =
         if funs.ContainsKey s then
             failwith (sprintf "Function already defined for symbol %s" (s.ToString()))
         else
             funs.Remove(s) |> ignore
             funs.Add(s, f)
-    
+
     member this.SubscribeFact symbol handler =
         let l =
             try
                 fact_handlers.[symbol]
             with :? KeyNotFoundException ->
                 []
+
         fact_handlers.Remove(symbol) |> ignore
         fact_handlers.Add(symbol, (handler :: l))
-    
+
     member this.SubscribeAllFacts handler =
         this.all_facts <- (handler :: all_facts)
-    
+
     member this.SubscribeGoal handler =
         this.goal_handlers <- (handler :: goal_handlers)
-    
+
     member this.Goals k =
         goals.Fold (fun () goal () -> k goal) ()
-    
+
     member this.Explain fact =
         let explored = ClauseHashtable()
         let s = new Dictionary<literal<'T>, unit>()
 
         let rec search clause =
-            if explored.ContainsKey(clause) then ()
+            if explored.ContainsKey(clause) then
+                ()
             else
                 explored.Add(clause, ())
                 let explanation = all.[clause]
+
                 match explanation with
                 | Axiom when Datalog<'T>.is_fact clause ->
                     s.Remove(clause[0]) |> ignore
                     s.Add(clause[0], ())
                 | ExtExplanation _
                 | Axiom -> ()
-                | Resolution (clause, fact) ->
-                    search clause;
-                    search [|fact|]
+                | Resolution(clause, fact) ->
+                    search clause
+                    search [| fact |]
 
-        search [|fact|];
-        iter_table s
-        |> Seq.fold (fun acc (lit, ()) -> lit :: acc) []
+        search [| fact |]
+        iter_table s |> Seq.fold (fun acc (lit, ()) -> lit :: acc) []
 
     member this.Premises fact =
         let rec search acc clause =
             let explanation = all.[clause]
+
             match explanation with
             | ExtExplanation _
             | Axiom -> clause, acc
-            | Resolution (clause, fact) ->
+            | Resolution(clause, fact) ->
                 let acc = fact :: acc
                 search acc clause
-        search [] [|fact|]
 
-    member this.Explanations clause =
-        all.[clause]
+        search [] [| fact |]
+
+    member this.Explanations clause = all.[clause]
+
+type RowTable<'T, 'U when 'T: equality> = Dictionary<literal<'T>, 'U>
+
+type tl_set<'T when 'T: equality> = { db: Database<'T>; query: query<'T> }
+
+and query<'T when 'T: equality> =
+    { q_expr: expr<'T>
+      q_vars: int[]
+      mutable q_table: table<'T> option }
+
+and expr<'T when 'T: equality> =
+    | Match of literal<'T> * int[] * int[]
+    | Join of query<'T> * query<'T>
+    | ProjectJoin of int[] * query<'T> * query<'T>
+    | Project of int[] * query<'T>
+    | AntiJoin of query<'T> * query<'T>
+
+and table<'T when 'T: equality> =
+    { tbl_vars: int[]
+      tbl_rows: RowTable<'T, unit> }
+
+
+type Table(vars) =
+    member val tbl =
+        { tbl_vars = vars
+          tbl_rows = RowTable() }
+
+    member this.Add row =
+        this.tbl.tbl_rows.Remove(row) |> ignore
+        this.tbl.tbl_rows.Add(row, ())
+
+    member this.Iter k =
+        this.tbl.tbl_rows |> iter_table |> Seq.iter (fun (r, _) -> k r)
+
+    member this.Length() = this.tbl.tbl_rows.Count
+
+module Query =
+    let unionVars l1 l2 =
+        l1
+        |> Array.fold (fun acc x -> if List.contains x acc then acc else x :: acc) (Array.toList l2)
+        |> List.sort
+        |> Array.ofList
+
+    let commonVars l1 l2 =
+        let l2 = Array.toList l2
+
+        Array.fold (fun acc x -> if List.contains x l2 then x :: acc else acc) [] l1
+        |> Array.ofList
+
+    let varsIndexOfLit lit =
+        let vars, indexes, _ =
+            Array.fold
+                (fun (vars, indexes, idx) t ->
+                    match t with
+                    | Var i when not (List.contains i vars) -> (i :: vars, idx :: indexes, idx + 1)
+                    | _ -> (vars, indexes, idx + 1))
+                ([], [], 0)
+                lit
+
+        Array.ofList vars, Array.ofList indexes
+
+    let make expr =
+        let q_vars =
+            match expr with
+            | Match(_, vars, _) -> vars
+            | Join(q1, q2) ->
+                if commonVars q1.q_vars q2.q_vars = [||] then
+                    Array.append q1.q_vars q2.q_vars
+                else
+                    unionVars q1.q_vars q2.q_vars
+            | ProjectJoin(vars, _, _) -> vars
+            | Project(vars, _) -> vars
+            | AntiJoin(q1, _) -> q1.q_vars
+
+        { q_expr = expr
+          q_table = None
+          q_vars = q_vars }
+    
+    let rec optimize q =
+        match q.q_expr with
+        | Project (vars, { q_expr = Join (q1, q2) })
+        | ProjectJoin (vars, q1, q2) ->
+            let q1 = optimize q1
+            let q2 = optimize q2
+            make (ProjectJoin (vars, q1, q2))
+        | Project (vars, q') ->
+            if vars = q'.q_vars then
+                optimize q'
+            else
+                make (Project (vars, optimize q'))
+        | Join (q1, q2) -> make (Join (optimize q1, optimize q2))
+        | AntiJoin (q1, q2) ->
+            let q1 = optimize q1
+            let q2 = optimize q2
+            if commonVars q1.q_vars q2.q_vars = [||] then
+                q1
+            else
+                make (AntiJoin (optimize q1, optimize q2))
+        | Match _ -> q
+    
+    let ask db neg vars lits =
+        assert (Array.length vars > 0)
+
+        let rec build_query lit =
+            let vars, indexes = varsIndexOfLit lit
+            make (Match (lit, vars, indexes))
+        and combine_queries  q lits =
+            match lits with
+            | [] -> q
+            | lit :: lits' ->
+                let q' = build_query lit
+                let q'' = make (Join (q, q'))
+                combine_queries q'' lits'
+        let q =
+            match lits with
+            | [] -> failwith "Datalog.Query.ask: require at least one literal"
+            | lit :: lits' ->
+                let q_lit = build_query lit
+                combine_queries q_lit lits'
+        let q =
+            match neg with
+            | [] -> q
+            | lit :: lits ->
+                let q_neg = build_query lit
+                let q_neg = combine_queries q_neg lits
+                make (AntiJoin (q, q_neg))
+        
+        let q =
+            make (Project (vars, q))
+            |> optimize
+        
+        { db = db ; query = q}
+
+    let select_indexes indexes a =
+        Array.map (fun i -> Array.get a i) indexes
+    
+    exception Found of int
