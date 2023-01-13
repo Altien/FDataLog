@@ -857,12 +857,25 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
 type RowTable<'T, 'U when 'T: equality> = Dictionary<literal<'T>, 'U>
 
+type Table(vars) =
+    member val vars = vars
+    member val rows = RowTable()
+
+    member this.Add row =
+        this.rows.Remove(row) |> ignore
+        this.rows.Add(row, ())
+
+    member this.Iter k =
+        this.rows |> iter_table |> Seq.iter (fun (r, _) -> k r)
+
+    member this.Length() = this.rows.Count
+
 type tl_set<'T when 'T: equality> = { db: Database<'T>; query: query<'T> }
 
 and query<'T when 'T: equality> =
     { q_expr: expr<'T>
       q_vars: int[]
-      mutable q_table: table<'T> option }
+      mutable q_table: Table option }
 
 and expr<'T when 'T: equality> =
     | Match of literal<'T> * int[] * int[]
@@ -876,19 +889,6 @@ and table<'T when 'T: equality> =
       tbl_rows: RowTable<'T, unit> }
 
 
-type Table(vars) =
-    member val tbl =
-        { tbl_vars = vars
-          tbl_rows = RowTable() }
-
-    member this.Add row =
-        this.tbl.tbl_rows.Remove(row) |> ignore
-        this.tbl.tbl_rows.Add(row, ())
-
-    member this.Iter k =
-        this.tbl.tbl_rows |> iter_table |> Seq.iter (fun (r, _) -> k r)
-
-    member this.Length() = this.tbl.tbl_rows.Count
 
 module Query =
     let unionVars l1 l2 =
@@ -931,63 +931,220 @@ module Query =
         { q_expr = expr
           q_table = None
           q_vars = q_vars }
-    
+
     let rec optimize q =
         match q.q_expr with
-        | Project (vars, { q_expr = Join (q1, q2) })
-        | ProjectJoin (vars, q1, q2) ->
+        | Project(vars, { q_expr = Join(q1, q2) })
+        | ProjectJoin(vars, q1, q2) ->
             let q1 = optimize q1
             let q2 = optimize q2
-            make (ProjectJoin (vars, q1, q2))
-        | Project (vars, q') ->
+            make (ProjectJoin(vars, q1, q2))
+        | Project(vars, q') ->
             if vars = q'.q_vars then
                 optimize q'
             else
-                make (Project (vars, optimize q'))
-        | Join (q1, q2) -> make (Join (optimize q1, optimize q2))
-        | AntiJoin (q1, q2) ->
+                make (Project(vars, optimize q'))
+        | Join(q1, q2) -> make (Join(optimize q1, optimize q2))
+        | AntiJoin(q1, q2) ->
             let q1 = optimize q1
             let q2 = optimize q2
+
             if commonVars q1.q_vars q2.q_vars = [||] then
                 q1
             else
-                make (AntiJoin (optimize q1, optimize q2))
+                make (AntiJoin(optimize q1, optimize q2))
         | Match _ -> q
-    
+
     let ask db neg vars lits =
         assert (Array.length vars > 0)
 
         let rec build_query lit =
             let vars, indexes = varsIndexOfLit lit
-            make (Match (lit, vars, indexes))
-        and combine_queries  q lits =
+            make (Match(lit, vars, indexes))
+
+        and combine_queries q lits =
             match lits with
             | [] -> q
             | lit :: lits' ->
                 let q' = build_query lit
-                let q'' = make (Join (q, q'))
+                let q'' = make (Join(q, q'))
                 combine_queries q'' lits'
+
         let q =
             match lits with
             | [] -> failwith "Datalog.Query.ask: require at least one literal"
             | lit :: lits' ->
                 let q_lit = build_query lit
                 combine_queries q_lit lits'
+
         let q =
             match neg with
             | [] -> q
             | lit :: lits ->
                 let q_neg = build_query lit
                 let q_neg = combine_queries q_neg lits
-                make (AntiJoin (q, q_neg))
-        
-        let q =
-            make (Project (vars, q))
-            |> optimize
-        
-        { db = db ; query = q}
+                make (AntiJoin(q, q_neg))
+
+        let q = make (Project(vars, q)) |> optimize
+
+        { db = db; query = q }
 
     let select_indexes indexes a =
         Array.map (fun i -> Array.get a i) indexes
-    
+
+    exception Not_found
     exception Found of int
+
+    let find_indexes vars l =
+        Array.map
+            (fun v ->
+                try
+                    Array.iteri
+                        (fun i v' ->
+                            if v = v' then
+                                raise (Found i))
+                        l
+
+                    raise Not_found
+                with Found i ->
+                    i)
+            vars
+
+    let rec eval (db: Database<obj>) query =
+        match query.q_table with
+        | Some l -> l
+        | None ->
+            let tbl =
+                match query.q_expr with
+                | Match(lit, vars, indexes) ->
+                    let tbl = Table(vars)
+
+                    db.Match lit (fun lit' ->
+                        let row = project indexes lit'
+                        tbl.Add(row))
+
+                    tbl
+                | Project(vars, q) ->
+                    let tbl = eval db q
+                    let indexes = find_indexes vars tbl.vars
+                    let result = Table(vars)
+
+                    result.Iter(fun row ->
+                        let row' = project indexes row
+                        result.Add(row'))
+
+                    result
+                | ProjectJoin(vars, q1, q2) -> eval_join (Some vars) db q1 q2
+                | Join(q1, q2) -> eval_join None db q1 q2
+                | AntiJoin(q1, q2) ->
+                    let tbl1 = eval db q1
+                    let tbl2 = eval db q2
+                    antijoin tbl1 tbl2
+
+            query.q_table <- Some tbl
+            tbl
+
+    and eval_join vars db q1 q2 =
+        let tbl1 = eval db q1
+        let tbl2 = eval db q2
+        let common = commonVars tbl1.vars tbl2.vars
+
+        match vars, common with
+        | None, [||] -> product tbl1 tbl2
+        | Some vars, [||] -> project_product vars tbl1 tbl2
+        | None, _ ->
+            let vars = unionVars tbl1.vars tbl2.vars
+            join vars common tbl1 tbl2
+        | Some vars, _ -> join vars common tbl1 tbl2
+
+    and project indexes row = Array.map (fun i -> row[i]) indexes
+
+    and product tbl1 tbl2 =
+        let vars = Array.append tbl1.vars tbl2.vars
+        let tbl = Table(vars)
+
+        tbl1.Iter(fun row1 ->
+            tbl2.Iter(fun row2 ->
+                let row = Array.append row1 row2
+                tbl.Add(row)))
+
+        tbl
+
+    and project_product vars tbl1 tbl2 =
+        let tbl = Table(vars)
+        let indexes = find_indexes vars (Array.append tbl1.vars tbl2.vars)
+
+        tbl1.Iter(fun row1 ->
+            tbl2.Iter(fun row2 ->
+                let row = Array.append row1 row2
+                let row = project indexes row
+                tbl.Add(row)))
+
+        tbl
+
+    and join vars common tbl1 tbl2 =
+        let vars1 = tbl1.vars
+        let vars2 = tbl2.vars
+        let indexes = find_indexes vars (Array.append vars1 vars2)
+        let result = Table(vars)
+        let idx1: Dictionary<literal<obj>, literal<obj> list> = mk_index tbl1 common
+        let common_indexes = find_indexes common vars2
+
+        tbl2.Iter(fun row2 ->
+            let join_items = select_indexes common_indexes row2
+            let rows1 = idx1.GetValueOrDefault(join_items, [])
+
+            List.iter
+                (fun row1 ->
+                    let row = project indexes (Array.append row1 row2)
+                    result.Add(row))
+                rows1)
+
+        result
+
+    and antijoin tbl1 tbl2 =
+        let common = commonVars tbl1.vars tbl2.vars
+        assert (common <> [||])
+        let common_indexes = find_indexes common tbl1.vars
+        let idx2 = mk_index tbl2 common
+        let result = Table(tbl1.vars)
+
+        tbl1.Iter(fun row ->
+            let join_items = select_indexes common_indexes row
+            if idx2.ContainsKey(join_items) then () else result.Add(row))
+
+        result
+
+    and mk_index tbl vars =
+        let indexes = find_indexes vars tbl.vars
+        let h = Dictionary()
+
+        tbl.Iter(fun row ->
+            let indexed_items = select_indexes indexes row
+            let rows = h.GetValueOrDefault(indexed_items, [])
+            h.Remove(indexed_items) |> ignore
+            h.Add(indexed_items, row :: rows))
+
+        h
+
+    let iter set k =
+        let answers = eval set.db set.query
+        answers.Iter k
+    
+    let toList set =
+        let tbl = eval set.db set.query
+        let l = ref []
+        tbl.Iter (fun row -> l := row :: !l)
+        !l
+    
+    let cardinal set =
+        let tbl = eval set.db set.query
+        tbl.Length ()
+    
+    let ppArray sep ppElt fmt a =
+        printfn "%A" a
+    
+    let pp_plan formatter set =
+        printfn "%A" set
+    
+    
