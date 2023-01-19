@@ -788,7 +788,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
     member this.Size = facts.Size() + selected.Size()
 
     member this.Fold k acc =
-        this.all |> iter_table |> Seq.fold k acc
+        this.all.Keys |> Seq.fold k acc
 
     member this.AddFun s f =
         if funs.ContainsKey s then
@@ -1148,3 +1148,9 @@ module Query =
         printfn "%A" set
     
     
+type Hashcons<'T when 'T : comparison and 'T : equality>() =
+    member val table : Set<'T> = Set.empty with get, set
+
+    member this.Make x =
+        this.table <- this.table.Add x
+        x
