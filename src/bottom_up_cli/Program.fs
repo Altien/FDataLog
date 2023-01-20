@@ -8,15 +8,15 @@ let DSym = BottomUp.Hashcons<string>()
 let quiet = ref false
 let progress = ref false
 let print_input = ref false
-let print_result = ref false
+let print_result = ref true
 let print_saturated = ref false
 let print_size = ref false
 let print_version = ref false
 let sums = ref []
-let patterns: list<DLogic.literal<string>> ref = ref []
-let goals: list<DLogic.literal<string>> ref = ref []
+let patterns = ref []
+let goals = ref []
 let explains = ref []
-let files: string list ref = ref []
+let files = ref []
 let queries = ref []
 
 let parseFile fileName =
@@ -127,7 +127,7 @@ let addSum symbol =
     let count = ref 0
     let printer () = printfn "%% number of fact with head %s: %d@." symbol count.Value
     let handler _ = incr count
-    sums := (DSym.Make symbol, handler, printer) :: sums.Value
+    sums.Value <- (DSym.Make symbol, handler, printer) :: sums.Value
 
 let addPattern p =
     let lexbuf = LexBuffer<char>.FromString p
@@ -165,8 +165,18 @@ let testLexerAndParserFromFile (fileName: string) =
     printfn "countFromParser: result = %A" countFromParser
 
 
-let testFile = Path.Combine(__SOURCE_DIRECTORY__, "test.txt")
+let testFile = Path.Combine(__SOURCE_DIRECTORY__, "clique10.pl")
 testLexerAndParserFromFile testFile
 
-printfn "Press any key to continue..."
-System.Console.ReadLine() |> ignore
+[<EntryPointAttribute>]
+let main args =
+    // addGoal "increasing(3,7)"
+    addPattern "same_clique(1,X)"
+    files.Value <- testFile :: files.Value
+    // args
+    // |> Array.tail
+    // |> Array.iter (fun f -> files.Value <- f :: files.Value)
+    parseFiles ()
+    |> List.map DDefault.clauseOfAst
+    |> processClauses
+    0

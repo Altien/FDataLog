@@ -17,5 +17,6 @@
     <Compile Include="Lexer.fs" />
     <Compile Include="Library.fs" />
     <Compile Include="BottomUp.fs" />
+    <Compile Include="Default.fs" />
   </ItemGroup>
 </Project>

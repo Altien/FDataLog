@@ -857,9 +857,9 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
 type RowTable<'T, 'U when 'T: equality> = Dictionary<literal<'T>, 'U>
 
-type Table(vars) =
+type Table<'T when 'T : equality>(vars) =
     member val vars = vars
-    member val rows = RowTable()
+    member val rows = RowTable<'T, unit>()
 
     member this.Add row =
         this.rows.Remove(row) |> ignore
@@ -875,7 +875,7 @@ type tl_set<'T when 'T: equality> = { db: Database<'T>; query: query<'T> }
 and query<'T when 'T: equality> =
     { q_expr: expr<'T>
       q_vars: int[]
-      mutable q_table: Table option }
+      mutable q_table: Table<'T> option }
 
 and expr<'T when 'T: equality> =
     | Match of literal<'T> * int[] * int[]
@@ -1010,7 +1010,7 @@ module Query =
                     i)
             vars
 
-    let rec eval (db: Database<obj>) query =
+    let rec eval (db: Database<'T>) query =
         match query.q_table with
         | Some l -> l
         | None ->
@@ -1087,7 +1087,7 @@ module Query =
         let vars2 = tbl2.vars
         let indexes = find_indexes vars (Array.append vars1 vars2)
         let result = Table(vars)
-        let idx1: Dictionary<literal<obj>, literal<obj> list> = mk_index tbl1 common
+        let idx1: Dictionary<literal<'T>, literal<'T> list> = mk_index tbl1 common
         let common_indexes = find_indexes common vars2
 
         tbl2.Iter(fun row2 ->
