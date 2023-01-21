@@ -56,7 +56,6 @@ type term<'T when 'T: equality> =
 
 type literal<'T when 'T: equality> = term<'T> array
 
-
 type clause<'T when 'T: equality> = literal<'T> array
 
 type soft_lit<'T when 'T: equality> = 'T * term<'T> list
@@ -236,17 +235,30 @@ type Datalog<'T when 'T: equality> private () =
             | Const _ -> failwith "Cannot bind to constant"
 
     static member matching((l1, o1), (l2, o2), ?subst) =
+        // printfn "Begin match, o1: %d, o2: %d" o1 o2
         let subst = Option.defaultValue Datalog<'T>.empty_subst subst
 
         if Array.length l1 <> Array.length l2 then
             raise UnifFailure
         else
             let match_pair subst t1 o1' t2 o2' =
+                // printfn "Details: subst: %A, t1: %A, o1': %d, t2: %A, o2': %d" subst t1 o1' t2 o2'
                 match t1, t2 with
-                | Const s1, Const s2 -> if s1 = s2 then subst else raise UnifFailure
-                | Var i, Var j when i = j && o1' = o2' -> subst
-                | Var _, _ -> Datalog<'T>.bind_subst subst t1 o1' t2 o2'
-                | Const _, Var _ -> raise UnifFailure
+                | Const s1, Const s2 ->
+                    // printfn "const, const"
+                    if s1 = s2 then
+                        subst
+                    else
+                        raise UnifFailure
+                | Var i, Var j when i = j && o1' = o2' ->
+                    // printfn "var, var"
+                    subst
+                | Var _, _ ->
+                    // printfn "var, _"
+                    Datalog<'T>.bind_subst subst t1 o1' t2 o2'
+                | Const _, Var _ ->
+                    // printfn "const, var"
+                    raise UnifFailure
 
             let process_pair subst (i1, i2) =
                 let t1, o1' = Datalog<'T>.deref subst i1 o1
@@ -369,7 +381,7 @@ let iter_table (d: Dictionary<'a, 'b>) = Seq.zip d.Keys d.Values
 type DataSet<'T, 'U when 'T: equality and 'U: equality> = HashSet<literal<'T> * 'U>
 
 let fold_dataset f s =
-    Seq.cast<literal<'T> * 'U> >> Seq.fold f s
+    Seq.fold f s
 
 type IndexNode<'T, 'U when 'T: equality and 'U: equality> =
     | Node of DataSet<'T, 'U> * TermHashtable<'T, IndexNode<'T, 'U>>
@@ -427,10 +439,18 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
     // member private this.AlphaEquiv = this.Unify(fun a b -> Datalog<'T>.alpha_equiv (a, b))
 
-    member private this.Matching k o_t (literal, o_lit) =
+    member private this.MatchGeneralization k o_t (literal, o_lit) =
         (fun acc (lit', elt) ->
             try
                 let subst = Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
+                k acc lit' elt subst
+            with UnifFailure ->
+                acc)
+    
+    member private this.MatchSpecialization k o_t (literal, o_lit) =
+        (fun acc (lit', elt) ->
+            try
+                let subst = Datalog<'T>.matching ((literal, o_lit), (lit', o_t))
                 k acc lit' elt subst
             with UnifFailure ->
                 acc)
@@ -461,7 +481,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         let rec search t i acc =
             match t, i with
-            | Node(s, _), i when i = len -> fold_dataset (this.Matching k o_t (literal, o_lit)) acc s
+            | Node(s, _), i when i = len -> Seq.fold (this.MatchGeneralization k o_t (literal, o_lit)) acc s
             | Node(_, subtries), i ->
                 if Datalog<'T>.is_var literal[i] then
                     try_with subtries acc (Var 0) i
@@ -483,7 +503,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         let rec search t i acc =
             match t, i with
-            | Node(s, _), i when i = len -> fold_dataset (this.Matching k o_t (literal, o_lit)) acc s
+            | Node(s, _), i when i = len -> Seq.fold (this.MatchSpecialization k o_t (literal, o_lit)) acc s
             | Node(_, subtries), i ->
                 if Datalog<'T>.is_var literal[i] then
                     subtries
@@ -629,8 +649,13 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
         )
 
     member this.Contains clause =
+        // TODO(Switch to F# Map for faster look-up)
         assert Datalog<'T>.check_safe clause
-        all.ContainsKey(clause)
+        all.Keys
+        |> Seq.map ((=) clause)
+        |> Seq.exists ((=) true)
+        // let res = all.ContainsKey(clause)
+        // res
 
     member this.RewriteClause(clause: clause<'T>) : clause<'T> =
         let rec rewrite_lit (lit: literal<'T>) =
@@ -750,7 +775,6 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
     member this.Add(clause, ?expl) =
         if not (Datalog<'T>.check_safe clause) then
             raise UnsafeClause
-
         let expl = Option.defaultValue Axiom expl
         this.ProcessItems(AddClause(clause, expl))
 

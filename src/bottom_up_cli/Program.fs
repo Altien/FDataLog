@@ -7,8 +7,8 @@ let DSym = BottomUp.Hashcons<string>()
 
 let quiet = ref false
 let progress = ref false
-let print_input = ref false
-let print_result = ref true
+let print_input = ref true
+let print_result = ref false
 let print_saturated = ref false
 let print_size = ref false
 let print_version = ref false
@@ -166,7 +166,6 @@ let testLexerAndParserFromFile (fileName: string) =
 
 
 let testFile = Path.Combine(__SOURCE_DIRECTORY__, "clique10.pl")
-testLexerAndParserFromFile testFile
 
 [<EntryPointAttribute>]
 let main args =
