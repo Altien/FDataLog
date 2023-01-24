@@ -53,8 +53,24 @@ type term<'T when 'T: equality> =
         | Var i -> i
         | Const s -> hash s
 
+    override this.ToString() =
+        match this with
+        | Var i -> "X" + i.ToString()
+        | Const t -> t.ToString()
+
 
 type literal<'T when 'T: equality> = term<'T> array
+
+let string_of_lit (lit: literal<'T>) =
+    if Array.length lit = 1 then
+        lit[ 0 ].ToString()
+    else if Array.length lit > 1 then
+        sprintf
+            "%s(%s)"
+            (lit[ 0 ].ToString())
+            (String.concat ", " (lit[1..] |> Array.toList |> List.map (fun t -> t.ToString())))
+    else
+        ""
 
 type clause<'T when 'T: equality> = literal<'T> array
 

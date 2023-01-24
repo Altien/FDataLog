@@ -1,5 +1,6 @@
 ﻿open System.IO
 open FSharp.Text.Lexing
+open Argu
 
 module DLogic = BottomUp
 module DDefault = Default
@@ -7,7 +8,7 @@ let DSym = BottomUp.Hashcons<string>()
 
 let quiet = ref false
 let progress = ref false
-let print_input = ref true
+let print_input = ref false
 let print_result = ref false
 let print_saturated = ref false
 let print_size = ref false
@@ -21,9 +22,9 @@ let queries = ref []
 
 let parseFile fileName =
     if not quiet.Value then
-        printf "%% parse file %s@." fileName
+        printf "%% parse file %s." fileName
 
-    use textReader = new System.IO.StreamReader(fileName)
+    use textReader = new StreamReader(fileName)
     let lexbuf = LexBuffer<char>.FromTextReader textReader
     Parser.parse_file Lexer.token lexbuf
 
@@ -48,10 +49,10 @@ let handleGoal (db : DLogic.Database<string>) lit =
     | _ -> ()
 
 let processClauses clauses =
-    if not quiet.Value then printfn "%% process %d clauses@." (List.length clauses)
-    if not print_input.Value then
-        List.iter (printfn "  clause @[<h>%A@]@.") clauses
-    if not quiet.Value then printfn "%% computing fixpoint...@."
+    if not quiet.Value then printfn "%% process %d clauses." (List.length clauses)
+    if print_input.Value then
+        List.iter (printfn "  clause %A") clauses
+    if not quiet.Value then printfn "%% computing fixpoint...."
     let db = DLogic.Database<string>.Default()
     List.iter (fun (symbol, handler, _) -> db.SubscribeFact symbol handler) sums.Value
     db.SubscribeGoal (handleGoal db)
@@ -63,8 +64,8 @@ let processClauses clauses =
             db.Add clause)
         clauses
     
-    if not quiet.Value then printfn "%% done.@."
-    if print_size.Value then printfn "%% size of saturated set: %d@." db.Size
+    if not quiet.Value then printfn "%% done.."
+    if print_size.Value then printfn "%% size of saturated set: %d." db.Size
     if print_saturated.Value then
         db.Fold
             (fun () clause ->
@@ -80,16 +81,17 @@ let processClauses clauses =
     List.iter (fun (_, _, printer) -> printer ()) sums.Value
     List.iter
         (fun pattern ->
-            printfn "%% facts matching pattern %A:@." pattern
-            db.Match pattern (fun fact -> printfn "  @[<h>%A.@]@." fact)
+            printfn "%% facts matching pattern %s:" (DLogic.string_of_lit pattern)
+            db.Match pattern (fun fact -> printfn "  %s" (DLogic.string_of_lit fact))
         )
         patterns.Value
     List.iter
         (fun (vars, lits, neg) ->
             let set = DLogic.Query.ask db neg vars lits
             let l = DLogic.Query.toList set
+            printfn "query answer: %d" (List.length l)
             if not quiet.Value then printfn "%% query plan: @[<h>%A@]@." set
-            printfn "%% @[<v2>query answer:@ "
+            printfn "%% query answer: "
             List.iter
                 (fun terms ->
                     Array.iteri
@@ -97,26 +99,26 @@ let processClauses clauses =
                             if i > 0 then printfn ", %A" t else printfn "%A" t
                         )
                         terms
-                    printfn "@;"
+                    printfn ";"
                 )
                 l
-            printfn "@]@.")
+            printfn "]")
         queries.Value
     
     List.iter
         (fun pattern ->
             db.Match pattern
                 (fun fact ->
-                    printfn "  premises of @[<h>%A]: @[<h>" fact
+                    printfn "  premises of %A: " fact
                     let clause, premises = db.Premises fact
                     List.iter (fun fact' -> printfn "%A, " fact') premises
-                    printfn " with @[<h>%A@]" clause
-                    printfn "@]@."
+                    printfn " with %A" clause
+                    printfn "."
 
                     let explanation = db.Explain fact
-                    printfn "  explain @[<h>%A@] by: @[<h>" fact
+                    printfn "  explain %A by: " fact
                     List.iter (fun fact' -> printfn " %A" fact') explanation
-                    printfn "@]@."
+                    printfn "]."
                 )
         )
         explains.Value
@@ -125,7 +127,7 @@ let processClauses clauses =
 
 let addSum symbol =
     let count = ref 0
-    let printer () = printfn "%% number of fact with head %s: %d@." symbol count.Value
+    let printer () = printfn "%% number of fact with head %s: %d." symbol count.Value
     let handler _ = incr count
     sums.Value <- (DSym.Make symbol, handler, printer) :: sums.Value
 
@@ -167,14 +169,65 @@ let testLexerAndParserFromFile (fileName: string) =
 
 let testFile = Path.Combine(__SOURCE_DIRECTORY__, "clique10.pl")
 
+type Arguments =
+    | [<AltCommandLine("-p")>] Progress
+    | [<AltCommandLine("-i")>] Input
+    | [<AltCommandLine("-o")>] Output
+    | Saturated
+    | Sum of sum:string
+    | Pattern of pattern:string
+    | Goal of goal:string
+    | Explain of pattern:string
+    | Query of query:string
+    | Size
+    | Version
+    | [<AltCommandLine("-q")>] Quiet
+
+
+    interface IArgParserTemplate with
+        member this.Usage =
+            match this with
+            | Progress -> "print progress"
+            | Input -> "print input clauses"
+            | Output -> "print facts after fixpoint"
+            | Saturated -> "print facts and clauses after fixpoint"
+            | Sum _ -> "aggregate number of literals for the given symbol"
+            | Pattern _ -> "print facts matching this pattern"
+            | Goal _ -> "add a goal for backward chaining"
+            | Explain _ -> "explain facts matching this pattern"
+            | Query _ -> "execute the query once fixpoint is reached"
+            | Size -> "print number of clauses after fixpoint"
+            | Version -> "print version"
+            | Quiet -> "quiet"
+
+let processArg arg =
+    match arg with
+    | Progress -> progress.Value <- true
+    | Input -> print_input.Value <- true
+    | Output -> print_result.Value <- true
+    | Saturated -> print_saturated.Value <- true
+    | Sum s -> addSum s
+    | Pattern p -> addPattern p
+    | Goal g -> addGoal g
+    | Explain e -> addExplain e
+    | Query q -> addQuery q
+    | Size -> print_size.Value <- true
+    | Version -> print_version.Value <- true
+    | Quiet -> quiet.Value <- true
+
 [<EntryPointAttribute>]
 let main args =
-    // addGoal "increasing(3,7)"
-    addPattern "same_clique(1,X)"
-    files.Value <- testFile :: files.Value
-    // args
-    // |> Array.tail
-    // |> Array.iter (fun f -> files.Value <- f :: files.Value)
+    let parser = ArgumentParser<Arguments>(programName = "datalogCli")
+    if args.Length = 0 then
+        printfn "%s\n" (parser.PrintUsage ())
+        exit 1
+    
+    parser.Parse(args, ignoreUnrecognized=true)
+    |> (fun r ->
+        files.Value <- r.UnrecognizedCliParams
+        r.GetAllResults ())
+    |> List.iter processArg
+    
     parseFiles ()
     |> List.map DDefault.clauseOfAst
     |> processClauses
