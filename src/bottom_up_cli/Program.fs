@@ -75,7 +75,7 @@ let processClauses clauses =
     else if print_result.Value then
         db.Fold
             (fun () clause ->
-                if DLogic.Datalog<string>.is_fact clause then
+                if DLogic.Datalog<string>.is_fact clause.Value then
                     printfn "  @[<h>%A@]@." clause)
             ()
     List.iter (fun (_, _, printer) -> printer ()) sums.Value

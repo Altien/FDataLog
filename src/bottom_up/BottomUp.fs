@@ -51,15 +51,27 @@ type term<'T when 'T: equality> =
     override this.GetHashCode() =
         match this with
         | Var i -> i
-        | Const s -> hash s
+        | Const t -> hash t
 
     override this.ToString() =
         match this with
         | Var i -> "X" + i.ToString()
         | Const t -> t.ToString()
 
-
 type literal<'T when 'T: equality> = term<'T> array
+
+type LiteralKey<'T when 'T: equality>(literal) =
+    member val key: literal<'T> = literal
+
+    member this.Value with get () = this.key
+
+    override this.Equals other =
+        match other with
+        | :? LiteralKey<'T> as other -> other.Value = this.key
+        | _ -> false
+    
+    override this.GetHashCode () =
+        hash this.key
 
 let string_of_lit (lit: literal<'T>) =
     if Array.length lit = 1 then
@@ -73,6 +85,19 @@ let string_of_lit (lit: literal<'T>) =
         ""
 
 type clause<'T when 'T: equality> = literal<'T> array
+
+type ClauseKey<'T when 'T: equality>(clause) =
+    member val key: clause<'T> = clause
+
+    member this.Value with get () = this.key
+
+    override this.Equals other =
+        match other with
+        | :? ClauseKey<'T> as other -> this.key = other.Value
+        | _ -> false
+    
+    override this.GetHashCode () =
+        hash this.key
 
 type soft_lit<'T when 'T: equality> = 'T * term<'T> list
 type soft_clause<'T when 'T: equality> = soft_lit<'T> * soft_lit<'T> list
@@ -595,7 +620,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
 exception UnsafeClause
 
-type ClauseHashtable<'T, 'U when 'T: equality and 'U: equality> = Dictionary<clause<'T>, 'U>
+type ClauseHashtable<'T, 'U when 'T: equality and 'U: equality> = Dictionary<ClauseKey<'T>, 'U>
 
 [<CustomEquality; NoComparison>]
 type explanation<'T when 'T: equality> =
@@ -667,11 +692,8 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
     member this.Contains clause =
         // TODO(Switch to F# Map for faster look-up)
         assert Datalog<'T>.check_safe clause
-        all.Keys
-        |> Seq.map ((=) clause)
-        |> Seq.exists ((=) true)
-        // let res = all.ContainsKey(clause)
-        // res
+        let res = all.ContainsKey(ClauseKey(clause))
+        res
 
     member this.RewriteClause(clause: clause<'T>) : clause<'T> =
         let rec rewrite_lit (lit: literal<'T>) =
@@ -697,7 +719,8 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
     member this.AddClause clause explanation =
         let clause = this.RewriteClause clause
         let already_present = this.Contains(clause)
-        all.Add(clause, explanation)
+        all.Remove(ClauseKey(clause)) |> ignore
+        all.Add(ClauseKey(clause), explanation)
 
         if already_present then
             ()
@@ -858,19 +881,19 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
     member this.Explain fact =
         let explored = ClauseHashtable()
-        let s = new Dictionary<literal<'T>, unit>()
+        let s = new Dictionary<LiteralKey<'T>, unit>()
 
         let rec search clause =
-            if explored.ContainsKey(clause) then
+            if explored.ContainsKey(ClauseKey(clause)) then
                 ()
             else
-                explored.Add(clause, ())
-                let explanation = all.[clause]
+                explored.Add(ClauseKey(clause), ())
+                let explanation = all.[ClauseKey(clause)]
 
                 match explanation with
                 | Axiom when Datalog<'T>.is_fact clause ->
-                    s.Remove(clause[0]) |> ignore
-                    s.Add(clause[0], ())
+                    s.Remove(LiteralKey(clause[0])) |> ignore
+                    s.Add(LiteralKey(clause[0]), ())
                 | ExtExplanation _
                 | Axiom -> ()
                 | Resolution(clause, fact) ->
@@ -882,7 +905,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
     member this.Premises fact =
         let rec search acc clause =
-            let explanation = all.[clause]
+            let explanation = all.[ClauseKey(clause)]
 
             match explanation with
             | ExtExplanation _
@@ -893,20 +916,20 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
         search [] [| fact |]
 
-    member this.Explanations clause = all.[clause]
+    member this.Explanations clause = all.[ClauseKey(clause)]
 
-type RowTable<'T, 'U when 'T: equality> = Dictionary<literal<'T>, 'U>
+type RowTable<'T, 'U when 'T: equality> = Dictionary<LiteralKey<'T>, 'U>
 
-type Table<'T when 'T : equality>(vars) =
+type Table<'T when 'T: equality>(vars) =
     member val vars = vars
     member val rows = RowTable<'T, unit>()
 
     member this.Add row =
-        this.rows.Remove(row) |> ignore
-        this.rows.Add(row, ())
+        this.rows.Remove(LiteralKey(row)) |> ignore
+        this.rows.Add(LiteralKey(row), ())
 
     member this.Iter k =
-        this.rows |> iter_table |> Seq.iter (fun (r, _) -> k r)
+        this.rows |> iter_table |> Seq.iter (fun (r, _) -> k (r.Value))
 
     member this.Length() = this.rows.Count
 
@@ -1127,12 +1150,12 @@ module Query =
         let vars2 = tbl2.vars
         let indexes = find_indexes vars (Array.append vars1 vars2)
         let result = Table(vars)
-        let idx1: Dictionary<literal<'T>, literal<'T> list> = mk_index tbl1 common
+        let idx1: Dictionary<LiteralKey<'T>, literal<'T> list> = mk_index tbl1 common
         let common_indexes = find_indexes common vars2
 
         tbl2.Iter(fun row2 ->
             let join_items = select_indexes common_indexes row2
-            let rows1 = idx1.GetValueOrDefault(join_items, [])
+            let rows1 = idx1.GetValueOrDefault(LiteralKey(join_items), [])
 
             List.iter
                 (fun row1 ->
@@ -1151,7 +1174,7 @@ module Query =
 
         tbl1.Iter(fun row ->
             let join_items = select_indexes common_indexes row
-            if idx2.ContainsKey(join_items) then () else result.Add(row))
+            if idx2.ContainsKey(LiteralKey(join_items)) then () else result.Add(row))
 
         result
 
@@ -1161,9 +1184,9 @@ module Query =
 
         tbl.Iter(fun row ->
             let indexed_items = select_indexes indexes row
-            let rows = h.GetValueOrDefault(indexed_items, [])
-            h.Remove(indexed_items) |> ignore
-            h.Add(indexed_items, row :: rows))
+            let rows = h.GetValueOrDefault(LiteralKey(indexed_items), [])
+            h.Remove(LiteralKey(indexed_items)) |> ignore
+            h.Add(LiteralKey(indexed_items), row :: rows))
 
         h
 
