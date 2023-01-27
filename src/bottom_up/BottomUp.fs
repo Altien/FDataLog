@@ -63,15 +63,14 @@ type literal<'T when 'T: equality> = term<'T> array
 type LiteralKey<'T when 'T: equality>(literal) =
     member val key: literal<'T> = literal
 
-    member this.Value with get () = this.key
+    member this.Value = this.key
 
     override this.Equals other =
         match other with
         | :? LiteralKey<'T> as other -> other.Value = this.key
         | _ -> false
-    
-    override this.GetHashCode () =
-        hash this.key
+
+    override this.GetHashCode() = hash this.key
 
 let string_of_lit (lit: literal<'T>) =
     if Array.length lit = 1 then
@@ -86,18 +85,28 @@ let string_of_lit (lit: literal<'T>) =
 
 type clause<'T when 'T: equality> = literal<'T> array
 
+let string_of_clause (clause: clause<'T>) =
+    if Array.length clause = 1 then
+        string_of_lit clause[0]
+    else if Array.length clause = 0 then
+        ""
+    else
+        sprintf
+            "%s :- %s"
+            (string_of_lit clause[0])
+            (clause[1..] |> Array.toList |> List.map string_of_lit |> String.concat ", ")
+
 type ClauseKey<'T when 'T: equality>(clause) =
     member val key: clause<'T> = clause
 
-    member this.Value with get () = this.key
+    member this.Value = this.key
 
     override this.Equals other =
         match other with
         | :? ClauseKey<'T> as other -> this.key = other.Value
         | _ -> false
-    
-    override this.GetHashCode () =
-        hash this.key
+
+    override this.GetHashCode() = hash this.key
 
 type soft_lit<'T when 'T: equality> = 'T * term<'T> list
 type soft_clause<'T when 'T: equality> = soft_lit<'T> * soft_lit<'T> list
@@ -287,10 +296,7 @@ type Datalog<'T when 'T: equality> private () =
                 match t1, t2 with
                 | Const s1, Const s2 ->
                     // printfn "const, const"
-                    if s1 = s2 then
-                        subst
-                    else
-                        raise UnifFailure
+                    if s1 = s2 then subst else raise UnifFailure
                 | Var i, Var j when i = j && o1' = o2' ->
                     // printfn "var, var"
                     subst
@@ -419,10 +425,10 @@ type TermHashtable<'T, 'U when 'T: equality and 'U: equality> = Dictionary<term<
 
 let iter_table (d: Dictionary<'a, 'b>) = Seq.zip d.Keys d.Values
 
-type DataSet<'T, 'U when 'T: equality and 'U: equality> = HashSet<literal<'T> * 'U>
+type DataSet<'T, 'U when 'T: equality and 'U: equality> = HashSet<LiteralKey<'T> * 'U>
 
-let fold_dataset f s =
-    Seq.fold f s
+let fold_dataset f a (s: DataSet<'T, 'U>) =
+    s |> Seq.map (fun (l, u) -> (l.Value, u)) |> Seq.fold f a
 
 type IndexNode<'T, 'U when 'T: equality and 'U: equality> =
     | Node of DataSet<'T, 'U> * TermHashtable<'T, IndexNode<'T, 'U>>
@@ -449,7 +455,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         let rec add t i =
             match t, i with
-            | Node(set, _subtries), i when i = len -> set.Add((literal, elt))
+            | Node(set, _subtries), i when i = len -> set.Add((LiteralKey(literal), elt))
             | Node(_, subtries), i ->
                 let c = Index<'T, 'U>.term_to_char literal[i]
                 let subtrie = subtries.GetValueOrDefault(c, create_node ())
@@ -483,11 +489,12 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
     member private this.MatchGeneralization k o_t (literal, o_lit) =
         (fun acc (lit', elt) ->
             try
+                // printfn "Matching on lit: %s elt: %A" (string_of_lit lit') elt
                 let subst = Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
                 k acc lit' elt subst
             with UnifFailure ->
                 acc)
-    
+
     member private this.MatchSpecialization k o_t (literal, o_lit) =
         (fun acc (lit', elt) ->
             try
@@ -522,7 +529,14 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         let rec search t i acc =
             match t, i with
-            | Node(s, _), i when i = len -> Seq.fold (this.MatchGeneralization k o_t (literal, o_lit)) acc s
+            | Node(s, _), i when i = len ->
+                let ds_s =
+                    s
+                    |> Seq.map (fst >> (fun k -> k.Value) >> string_of_lit)
+                    |> Seq.toList
+                    |> String.concat "; "
+                // printfn "Retrieving generalizations on %s" ds_s
+                fold_dataset (this.MatchGeneralization k o_t (literal, o_lit)) acc s
             | Node(_, subtries), i ->
                 if Datalog<'T>.is_var literal[i] then
                     try_with subtries acc (Var 0) i
@@ -544,7 +558,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
 
         let rec search t i acc =
             match t, i with
-            | Node(s, _), i when i = len -> Seq.fold (this.MatchSpecialization k o_t (literal, o_lit)) acc s
+            | Node(s, _), i when i = len -> fold_dataset (this.MatchSpecialization k o_t (literal, o_lit)) acc s
             | Node(_, subtries), i ->
                 if Datalog<'T>.is_var literal[i] then
                     subtries
@@ -608,7 +622,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
         search this.node 0 acc
 
     member this.Fold k acc (Node(set, subtries)) =
-        let acc = fold_dataset (fun acc (lit, elt) -> k acc lit elt) acc set
+        let acc = Seq.fold (fun acc (lit, elt) -> k acc lit elt) acc set
 
         subtries
         |> iter_table
@@ -717,10 +731,10 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
         Array.map rewrite_lit clause
 
     member this.AddClause clause explanation =
+        // printfn "Processing clause: %s" (string_of_clause clause)
         let clause = this.RewriteClause clause
         let already_present = this.Contains(clause)
-        all.Remove(ClauseKey(clause)) |> ignore
-        all.Add(ClauseKey(clause), explanation)
+        all.[ClauseKey(clause)] <- explanation
 
         if already_present then
             ()
@@ -751,6 +765,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
                  (fun () _ clause' subst ->
                      let clause'' = Datalog<'T>.remove_first_subst subst (clause', 0)
                      let explanation = Resolution(clause', clause[0])
+                     //  printfn "Clause is fact: adding new clause: %s" (string_of_clause clause'')
                      this.queue.Enqueue(AddClause(clause'', explanation)))
                  ()
                  0
@@ -763,6 +778,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
              goals.RetrieveUnify
                  (fun () _goal () subst ->
                      let new_goal = Datalog<'T>.subst_literal subst (clause[1], 0)
+                    //  printfn "Pushing new !!goal!! from clause processor: %s" (string_of_lit new_goal)
                      this.queue.Enqueue(AddGoal new_goal))
                  ()
                  offset
@@ -782,9 +798,17 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
     member this.AddGoal literal =
         try
+            // printfn "Processing goal: %s" (string_of_lit literal)
             let offset = Datalog<'T>.offset [| literal |]
             goals.RetrieveRenaming (fun () _ _ _ -> raise Exit) () offset (literal, 0)
-            List.iter (fun h -> h literal) goal_handlers
+            // printfn "Length of goal handlers: %d" (List.length this.goal_handlers)
+
+            List.iter
+                (fun h ->
+                    // printfn "Calling goal handler"
+                    h literal)
+                this.goal_handlers
+
             goals.Add literal () |> ignore
 
             heads.RetrieveUnify
@@ -814,6 +838,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
     member this.Add(clause, ?expl) =
         if not (Datalog<'T>.check_safe clause) then
             raise UnsafeClause
+
         let expl = Option.defaultValue Axiom expl
         this.ProcessItems(AddClause(clause, expl))
 
@@ -822,6 +847,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
             raise UnsafeClause
 
         let expl = Option.defaultValue Axiom expl
+        // printfn "Adding fact: %s" (string_of_lit lit)
         this.ProcessItems(AddClause([| lit |], expl))
 
     member this.Goal lit = this.ProcessItems(AddGoal lit)
@@ -850,8 +876,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
     member this.Size = facts.Size() + selected.Size()
 
-    member this.Fold k acc =
-        this.all.Keys |> Seq.fold k acc
+    member this.Fold k acc = this.all.Keys |> Seq.fold k acc
 
     member this.AddFun s f =
         if funs.ContainsKey s then
@@ -875,6 +900,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
     member this.SubscribeGoal handler =
         this.goal_handlers <- (handler :: goal_handlers)
+        // printfn "Added handler to goal_handlers. New length: %d" (List.length this.goal_handlers)
 
     member this.Goals k =
         goals.Fold (fun () goal () -> k goal) ()
@@ -1088,6 +1114,7 @@ module Query =
 
                     tbl
                 | Project(vars, q) ->
+                    // printfn "project"
                     let tbl = eval db q
                     let indexes = find_indexes vars tbl.vars
                     let result = Table(vars)
@@ -1098,25 +1125,32 @@ module Query =
 
                     result
                 | ProjectJoin(vars, q1, q2) -> eval_join (Some vars) db q1 q2
-                | Join(q1, q2) -> eval_join None db q1 q2
+                | Join(q1, q2) ->
+                    // printfn "join"
+                    eval_join None db q1 q2
                 | AntiJoin(q1, q2) ->
+                    // printfn "aj1"
                     let tbl1 = eval db q1
+                    // printfn "aj2"
                     let tbl2 = eval db q2
                     antijoin tbl1 tbl2
 
             query.q_table <- Some tbl
+            // printfn "Table length: %d" (tbl.Length())
             tbl
 
     and eval_join vars db q1 q2 =
         let tbl1 = eval db q1
         let tbl2 = eval db q2
         let common = commonVars tbl1.vars tbl2.vars
+        // printfn "%A" common
 
         match vars, common with
         | None, [||] -> product tbl1 tbl2
         | Some vars, [||] -> project_product vars tbl1 tbl2
         | None, _ ->
             let vars = unionVars tbl1.vars tbl2.vars
+            // printfn "%A" vars
             join vars common tbl1 tbl2
         | Some vars, _ -> join vars common tbl1 tbl2
 
@@ -1155,7 +1189,20 @@ module Query =
 
         tbl2.Iter(fun row2 ->
             let join_items = select_indexes common_indexes row2
+            // printfn "join_items length: %d" (Array.length join_items)
+            // printfn "join_items 1: %O" (Array.head join_items)
             let rows1 = idx1.GetValueOrDefault(LiteralKey(join_items), [])
+
+            // match rows1 with
+            // | [] ->
+            //     printfn
+            //         "Could not find key %A with hashcode %d in set of keys: %A"
+            //         join_items
+            //         (LiteralKey(join_items).GetHashCode())
+            //         (idx1.Keys |> Seq.map (fun t -> t.Value) |> Seq.toArray)
+            // | _ -> ()
+
+            // printfn "rows1 length: %d" (List.length rows1)
 
             List.iter
                 (fun row1 ->
@@ -1174,7 +1221,11 @@ module Query =
 
         tbl1.Iter(fun row ->
             let join_items = select_indexes common_indexes row
-            if idx2.ContainsKey(LiteralKey(join_items)) then () else result.Add(row))
+
+            if idx2.ContainsKey(LiteralKey(join_items)) then
+                ()
+            else
+                result.Add(row))
 
         result
 
@@ -1184,35 +1235,35 @@ module Query =
 
         tbl.Iter(fun row ->
             let indexed_items = select_indexes indexes row
+            // printfn "Adding indexed items: %A with hashcode %A" indexed_items (LiteralKey(indexed_items).GetHashCode())
             let rows = h.GetValueOrDefault(LiteralKey(indexed_items), [])
             h.Remove(LiteralKey(indexed_items)) |> ignore
             h.Add(LiteralKey(indexed_items), row :: rows))
 
+        // printfn "new index length: %d" (h.Count)
         h
 
     let iter set k =
         let answers = eval set.db set.query
         answers.Iter k
-    
+
     let toList set =
         let tbl = eval set.db set.query
         let l = ref []
-        tbl.Iter (fun row -> l := row :: !l)
-        !l
-    
+        tbl.Iter(fun row -> l.Value <- row :: l.Value)
+        l.Value
+
     let cardinal set =
         let tbl = eval set.db set.query
-        tbl.Length ()
-    
-    let ppArray sep ppElt fmt a =
-        printfn "%A" a
-    
-    let pp_plan formatter set =
-        printfn "%A" set
-    
-    
-type Hashcons<'T when 'T : comparison and 'T : equality>() =
-    member val table : Set<'T> = Set.empty with get, set
+        tbl.Length()
+
+    let ppArray sep ppElt fmt a = printfn "%A" a
+
+    let pp_plan formatter set = printfn "%A" set
+
+
+type Hashcons<'T when 'T: comparison and 'T: equality>() =
+    member val table: Set<'T> = Set.empty with get, set
 
     member this.Make x =
         this.table <- this.table.Add x
