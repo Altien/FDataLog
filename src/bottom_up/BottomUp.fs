@@ -34,6 +34,13 @@ module Univ =
         | None -> false
         | Some _ -> true
 
+// We need the CustomEquality attribute in order to have a custom
+// implementation of GetHashCode on this type
+
+/// A term is either a variable or a constant, and is the building
+/// block of literals and clauses or rules. Variables are identified
+/// by an integer and are written X0, X1, etc. Constants are identified
+/// by their associated value of type 'T.
 [<CustomEquality; NoComparison>]
 type term<'T when 'T: equality> =
     | Var of int
@@ -58,8 +65,21 @@ type term<'T when 'T: equality> =
         | Var i -> "X" + i.ToString()
         | Const t -> t.ToString()
 
+/// Literals (or Atoms) are arrays of terms, where the first term in the
+/// array represents a "relation". For example, parent(John, Matt) is
+/// a term which internally would be represented as the array of terms
+/// <c>[| Const "parent" ; Const "John" ; Const "Matt" |]</c>
 type literal<'T when 'T: equality> = term<'T> array
 
+/// A wrapper over literals with custom equality implemented in order
+/// to achieve correct behaviour in Dictionaries and HashSets.
+/// 
+/// Note that
+/// this is necessary because custom equality cannot be implemented on
+/// types that merely rename an existing type. However, we wish to avoid
+/// making the literal type a wrapper itself because in doing so we would
+/// lose the ability to treat literals like arrays without first unwrapping
+/// them.
 type LiteralKey<'T when 'T: equality>(literal) =
     member val key: literal<'T> = literal
 
@@ -72,6 +92,9 @@ type LiteralKey<'T when 'T: equality>(literal) =
 
     override this.GetHashCode() = hash this.key
 
+/// Produces a readable string of a literal wherein the first term
+/// is correctly displayed as the relation, and the following terms are
+/// displayed within parentheses following the relation.
 let string_of_lit (lit: literal<'T>) =
     if Array.length lit = 1 then
         lit[ 0 ].ToString()
@@ -83,8 +106,13 @@ let string_of_lit (lit: literal<'T>) =
     else
         ""
 
+/// A clause is an array of literals, wherein the first literal
+/// defines a name for the clause and the involved variables or constants,
+/// and the following literals describe the set of conditions that must be met
+/// in order for the clause to be fulfilled.
 type clause<'T when 'T: equality> = literal<'T> array
 
+/// Produces a readable string of a clause
 let string_of_clause (clause: clause<'T>) =
     if Array.length clause = 1 then
         string_of_lit clause[0]
@@ -96,6 +124,16 @@ let string_of_clause (clause: clause<'T>) =
             (string_of_lit clause[0])
             (clause[1..] |> Array.toList |> List.map string_of_lit |> String.concat ", ")
 
+
+/// A wrapper over clauses with custom equality implemented in order
+/// to achieve correct behaviour in Dictionaries and HashSets.
+/// 
+/// Note that
+/// this is necessary because custom equality cannot be implemented on
+/// types that merely rename an existing type. However, we wish to avoid
+/// making the clause type a wrapper itself because in doing so we would
+/// lose the ability to treat clauses like arrays without first unwrapping
+/// them.
 type ClauseKey<'T when 'T: equality>(clause) =
     member val key: clause<'T> = clause
 
