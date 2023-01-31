@@ -27,9 +27,9 @@ let termOfAst vt ast =
     match ast with
     | A.Const s
     | A.Quoted s ->
-        Datalog<string>.mk_const (StringSymbol.Make s)
+        Datalog.mk_const (StringSymbol.Make s)
     | A.Var x ->
-        Datalog<string>.mk_var (getvar vt x)
+        Datalog.mk_var (getvar vt x)
 
 let literalOfAst vt lit =
     let vt = Option.defaultValue (mk_vartbl ()) vt
@@ -37,7 +37,7 @@ let literalOfAst vt lit =
     | A.Atom (s, args) ->
         let s = StringSymbol.Make s
         let args = List.map (termOfAst vt) args
-        Datalog<string>.mk_literal s args
+        Datalog.mk_literal s args
 
 let clauseOfAst c =
     match c with
@@ -45,7 +45,7 @@ let clauseOfAst c =
         let vt = mk_vartbl ()
         let a = literalOfAst (Some vt) a
         let l = List.map (literalOfAst (Some vt)) l
-        Datalog<string>.mk_clause a l
+        Datalog.mk_clause a l
 
 let queryOfAst q =
     match q with

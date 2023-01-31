@@ -40,7 +40,7 @@ let handleGoal (db: DLogic.Database<string>) lit =
         let b = int b
         compare a b
 
-    match (DLogic.Datalog<string>.open_literal lit) with
+    match (DLogic.Datalog.open_literal lit) with
     | "lt", [ DLogic.Const a; DLogic.Const b ] when compare a b < 0 -> db.AddFact lit
     | "le", [ DLogic.Const a; DLogic.Const b ] when compare a b <= 0 -> db.AddFact lit
     | "equal", [ DLogic.Const a; DLogic.Const b ] when a = b -> db.AddFact lit
@@ -81,7 +81,7 @@ let processClauses clauses =
     else if print_result.Value then
         db.Fold
             (fun () clause ->
-                if DLogic.Datalog<string>.is_fact clause.Value then
+                if DLogic.Datalog.is_fact clause.Value then
                     printfn "  @[<h>%A@]@." clause)
             ()
 

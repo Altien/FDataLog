@@ -73,7 +73,7 @@ type literal<'T when 'T: equality> = term<'T> array
 
 /// A wrapper over literals with custom equality implemented in order
 /// to achieve correct behaviour in Dictionaries and HashSets.
-/// 
+///
 /// Note that
 /// this is necessary because custom equality cannot be implemented on
 /// types that merely rename an existing type. However, we wish to avoid
@@ -127,7 +127,7 @@ let string_of_clause (clause: clause<'T>) =
 
 /// A wrapper over clauses with custom equality implemented in order
 /// to achieve correct behaviour in Dictionaries and HashSets.
-/// 
+///
 /// Note that
 /// this is necessary because custom equality cannot be implemented on
 /// types that merely rename an existing type. However, we wish to avoid
@@ -157,92 +157,74 @@ type bind<'U> = 'U * int
 
 exception UnifFailure
 
-[<AbstractClass; Sealed>]
-type Datalog<'T when 'T: equality> private () =
-    static member mk_var i : term<'T> = Var i
-    static member mk_const(s: 'T) = Const s
-    static member mk_literal (head: 'T) args = Array.ofList (Const head :: args)
+module Datalog =
+    let mk_var i : term<'T> = Var i
+    let mk_const (s: 'T) = Const s
+    let mk_literal (head: 'T) args = Array.ofList (Const head :: args)
 
-    static member of_soft_lit(hd, args) = Datalog<'T>.mk_literal hd args
+    let of_soft_lit (hd, args) = mk_literal hd args
 
-    static member open_literal(literal: term<'T>[]) =
+    let open_literal (literal: term<'T>[]) =
         match Array.toList literal with
         | Const x :: args -> x, args
         | _ -> invalidArg "literal" "Array was empty or head was Var"
 
-    static member mk_clause head premises : clause<'T> = Array.ofList (head :: premises)
+    let mk_clause head premises : clause<'T> = Array.ofList (head :: premises)
 
-    static member of_soft_clause(concl, premises) =
-        let concl = Datalog<'T>.of_soft_lit concl
-        let premises = List.map Datalog<'T>.of_soft_lit premises
-        Datalog<'T>.mk_clause concl premises
+    let of_soft_clause (concl, premises) =
+        let concl = of_soft_lit concl
+        let premises = List.map of_soft_lit premises
+        mk_clause concl premises
 
-    static member open_clause(clause: clause<'T>) =
-        let head = Datalog<'T>.open_literal clause[0]
+    let open_clause (clause: clause<'T>) =
+        let head = open_literal clause[0]
 
         let body =
             (Array.length clause) - 1
             |> Array.sub clause 1
             |> Array.toList
-            |> List.map Datalog<'T>.open_literal
+            |> List.map open_literal
 
         head, body
 
-    static member is_var(t: term<'T>) =
+    let is_var (t: term<'T>) =
         match t with
         | Var _ -> true
         | _ -> false
 
-    static member is_ground(t: literal<'T>) =
-        assert (not (Datalog<'T>.is_var t[0]))
+    let is_ground (t: literal<'T>) =
+        assert (not (is_var t[0]))
 
         let rec check t i =
             if i = Array.length t then
                 true
             else
-                (not (Datalog<'T>.is_var t[i]) && check t (i + 1))
+                (not (is_var t[i]) && check t (i + 1))
 
         check t 1
 
-    static member arity(t: literal<'T>) = Array.length t - 1
+    let arity (t: literal<'T>) = Array.length t - 1
 
-    static member eq_term (t1: term<'T>) (t2: term<'T>) =
+    let eq_term (t1: term<'T>) (t2: term<'T>) =
         match t1, t2 with
         | Var i, Var j -> i = j
         | Const s1, Const s2 -> s1 = s2
         | _ -> false
 
-    static member eq_literal (l1: literal<'T>) (l2: literal<'T>) =
+    let eq_literal (l1: literal<'T>) (l2: literal<'T>) =
         if Array.length l1 <> Array.length l2 then
             false
         else
-            Array.zip l1 l2 |> Array.forall (fun (t1, t2) -> Datalog<'T>.eq_term t1 t2)
+            Array.zip l1 l2 |> Array.forall (fun (t1, t2) -> eq_term t1 t2)
 
-    static member hash_term(t, ?hash_fn) =
-        let hash_fn = defaultArg hash_fn hash
-
-        match t with
-        | Var i -> i
-        | Const s -> hash_fn s
-
-    static member hash_literal(l, ?hash_fn) =
-        let hash_fn = defaultArg hash_fn hash
-
-        let hash_term h t =
-            match t with
-            | Var i -> h * 65599 + i
-            | Const s -> h * 65588 + hash_fn s
-
-        Array.fold hash_term 13 l |> abs
-
-    static member check_safe(clause: clause<'T>) =
+    let check_safe (clause: clause<'T>) =
         let rec check_head i =
             if i = Array.length clause[0] then
                 true
             else
                 let t = clause[0][i]
 
-                if Datalog<'T>.is_var t then
+                if is_var t then
                     check_body t 1 && check_head (i + 1)
                 else
                     check_head (i + 1)
@@ -255,36 +237,28 @@ type Datalog<'T when 'T: equality> private () =
 
         and check_body_literal var literal k =
             if k = Array.length literal then false
-            else if Datalog<'T>.eq_term literal[k] var then true
+            else if eq_term literal[k] var then true
             else check_body_literal var literal (k + 1)
 
         check_head 1
 
-    static member is_fact(clause: clause<'T>) =
-        Array.length clause = 1 && Datalog<'T>.is_ground clause[0]
+    let is_fact (clause: clause<'T>) =
+        Array.length clause = 1 && is_ground clause[0]
 
-    static member eq_clause c1 c2 =
+    let eq_clause c1 c2 =
         if Array.length c1 <> Array.length c2 then
             false
         else
-            Array.zip c1 c2 |> Array.forall (fun (l1, l2) -> Datalog<'T>.eq_literal l1 l2)
+            Array.zip c1 c2 |> Array.forall (fun (l1, l2) -> eq_literal l1 l2)
 
-    static member hash_clause(c: clause<'T>) =
-        let mutable h = 17
+    let empty_subst: subst<'T> = SubstEmpty
 
-        for i = 0 to Array.length c - 1 do
-            h <- (h + 65536) * Datalog<'T>.hash_literal c[i]
-
-        abs h
-
-    static member empty_subst: subst<'T> = SubstEmpty
-
-    static member is_empty_subst =
+    let is_empty_subst =
         function
         | SubstEmpty -> true
         | _ -> false
 
-    static member offset(clause: clause<'T>) =
+    let offset (clause: clause<'T>) =
         let rec fold_lit terms offset i =
             if i = Array.length terms then
                 offset
@@ -305,26 +279,26 @@ type Datalog<'T when 'T: equality> private () =
         let offset = fold_lits clause 0 0
         offset + 1
 
-    static member deref subst var offset =
+    let rec deref subst var offset =
         match subst, var with
         | _, Const _ -> var, offset
-        | SubstBind(i, o, t, o_t, _), Var j when i = j && o = offset -> Datalog<'T>.deref subst t o_t
-        | SubstBind(_, _, _, _, subst'), _ -> Datalog<'T>.deref subst' var offset
+        | SubstBind(i, o, t, o_t, _), Var j when i = j && o = offset -> deref subst t o_t
+        | SubstBind(_, _, _, _, subst'), _ -> deref subst' var offset
         | SubstEmpty, _ -> var, offset
 
-    static member bind_subst subst v o_v t o_t =
-        assert (Datalog<'T>.is_var v)
+    let bind_subst subst v o_v t o_t =
+        assert (is_var v)
 
-        if Datalog<'T>.eq_term v t && o_v = o_t then
+        if eq_term v t && o_v = o_t then
             subst
         else
             match v with
             | Var i -> SubstBind(i, o_v, t, o_t, subst)
             | Const _ -> failwith "Cannot bind to constant"
 
-    static member matching((l1, o1), (l2, o2), ?subst) =
+    let matching (l1, o1) (l2, o2) subst =
         // printfn "Begin match, o1: %d, o2: %d" o1 o2
-        let subst = Option.defaultValue Datalog<'T>.empty_subst subst
+        let subst = Option.defaultValue empty_subst subst
 
         if Array.length l1 <> Array.length l2 then
             raise UnifFailure
@@ -340,20 +314,20 @@ type Datalog<'T when 'T: equality> private () =
                     subst
                 | Var _, _ ->
                     // printfn "var, _"
-                    Datalog<'T>.bind_subst subst t1 o1' t2 o2'
+                    bind_subst subst t1 o1' t2 o2'
                 | Const _, Var _ ->
                     // printfn "const, var"
                     raise UnifFailure
 
             let process_pair subst (i1, i2) =
-                let t1, o1' = Datalog<'T>.deref subst i1 o1
-                let t2, o2' = Datalog<'T>.deref subst i2 o2
+                let t1, o1' = deref subst i1 o1
+                let t2, o2' = deref subst i2 o2
                 match_pair subst t1 o1' t2 o2'
 
             Array.zip l1 l2 |> Array.fold process_pair subst
 
-    static member unify((l1, o1), (l2, o2), ?subst) =
-        let subst = Option.defaultValue Datalog<'T>.empty_subst subst
+    let unify (l1, o1) (l2, o2) subst =
+        let subst = Option.defaultValue empty_subst subst
 
         if Array.length l1 <> Array.length l2 then
             raise UnifFailure
@@ -362,18 +336,18 @@ type Datalog<'T when 'T: equality> private () =
                 match t1, t2 with
                 | Const s1, Const s2 -> if s1 = s2 then subst else raise UnifFailure
                 | Var i, Var j when i = j && o1' = o2' -> subst
-                | Var _, _ -> Datalog<'T>.bind_subst subst t1 o1' t2 o2'
-                | Const _, Var _ -> Datalog<'T>.bind_subst subst t2 o2' t1 o1'
+                | Var _, _ -> bind_subst subst t1 o1' t2 o2'
+                | Const _, Var _ -> bind_subst subst t2 o2' t1 o1'
 
             let process_pair subst (i1, i2) =
-                let t1, o1' = Datalog<'T>.deref subst i1 o1
-                let t2, o2' = Datalog<'T>.deref subst i2 o2
+                let t1, o1' = deref subst i1 o1
+                let t2, o2' = deref subst i2 o2
                 unif_pair subst t1 o1' t2 o2'
 
             Array.zip l1 l2 |> Array.fold process_pair subst
 
-    static member alpha_equiv((l1, o1), (l2, o2), ?subst) =
-        let subst = Option.defaultValue Datalog<'T>.empty_subst subst
+    let alpha_equiv (l1, o1) (l2, o2) subst =
+        let subst = Option.defaultValue empty_subst subst
 
         if Array.length l1 <> Array.length l2 then
             raise UnifFailure
@@ -382,18 +356,18 @@ type Datalog<'T when 'T: equality> private () =
                 match t1, t2 with
                 | Const s1, Const s2 -> if s1 = s2 then subst else raise UnifFailure
                 | Var i, Var j when i = j && o1' = o2' -> subst
-                | Var _, Var _ -> Datalog<'T>.bind_subst subst t1 o1' t2 o2'
+                | Var _, Var _ -> bind_subst subst t1 o1' t2 o2'
                 | Const _, Var _
                 | Var _, Const _ -> raise UnifFailure
 
             let process_pair subst (i1, i2) =
-                let t1, o1' = Datalog<'T>.deref subst i1 o1
-                let t2, o2' = Datalog<'T>.deref subst i2 o2
+                let t1, o1' = deref subst i1 o1
+                let t2, o2' = deref subst i2 o2
                 unif_pair subst t1 o1' t2 o2'
 
             Array.zip l1 l2 |> Array.fold process_pair subst
 
-    static member shift_lit lit offset =
+    let shift_lit lit offset =
         if offset = 0 then
             lit
         else
@@ -404,56 +378,56 @@ type Datalog<'T when 'T: equality> private () =
                     | Const _ -> t)
                 lit
 
-    static member subst_literal subst (lit, offset) =
-        if Datalog<'T>.is_ground lit || (Datalog<'T>.is_empty_subst subst && offset = 0) then
+    let subst_literal subst (lit, offset) =
+        if is_ground lit || (is_empty_subst subst && offset = 0) then
             lit
-        else if Datalog<'T>.is_empty_subst subst then
-            Datalog<'T>.shift_lit lit offset
+        else if is_empty_subst subst then
+            shift_lit lit offset
         else
             Array.map
                 (fun t ->
-                    let t', o_t' = Datalog<'T>.deref subst t offset
+                    let t', o_t' = deref subst t offset
 
                     match t' with
                     | Var i -> Var(i + o_t')
                     | Const _ -> t')
                 lit
 
-    static member remove_first_subst subst (clause, offset) =
+    let remove_first_subst subst (clause, offset) =
         assert (Array.length clause > 1)
         let a = Array.create (Array.length clause - 1) [||]
-        a[0] <- Datalog<'T>.subst_literal subst (clause[0], offset)
+        a[0] <- subst_literal subst (clause[0], offset)
 
         for i = 1 to Array.length clause - 2 do
-            a[i] <- Datalog<'T>.subst_literal subst (clause[i + 1], offset)
+            a[i] <- subst_literal subst (clause[i + 1], offset)
 
         a
 
-    static member quantify1 f = let v1 = Datalog<'T>.mk_var 1 in f v1
+    let quantify1 f = let v1 = mk_var 1 in f v1
 
-    static member quantify2 f =
-        let v1 = Datalog<'T>.mk_var 1 in
-        let v2 = Datalog<'T>.mk_var 2 in
+    let quantify2 f =
+        let v1 = mk_var 1 in
+        let v2 = mk_var 2 in
         f v1 v2
 
-    static member quantify3 f =
-        let v1 = Datalog<'T>.mk_var 1 in
-        let v2 = Datalog<'T>.mk_var 2 in
-        let v3 = Datalog<'T>.mk_var 3 in
+    let quantify3 f =
+        let v1 = mk_var 1 in
+        let v2 = mk_var 2 in
+        let v3 = mk_var 3 in
         f v1 v2 v3
 
-    static member quantify4 f =
-        let v1 = Datalog<'T>.mk_var 1 in
-        let v2 = Datalog<'T>.mk_var 2 in
-        let v3 = Datalog<'T>.mk_var 3 in
-        let v4 = Datalog<'T>.mk_var 4 in
+    let quantify4 f =
+        let v1 = mk_var 1 in
+        let v2 = mk_var 2 in
+        let v3 = mk_var 3 in
+        let v4 = mk_var 4 in
         f v1 v2 v3 v4
 
-    static member quantifyn n f =
+    let quantifyn n f =
         let rec mk_vars =
             function
             | 0 -> []
-            | n -> Datalog<'T>.mk_var n :: mk_vars (n - 1)
+            | n -> mk_var n :: mk_vars (n - 1)
 
         assert (n >= 0)
 
@@ -517,18 +491,18 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
     //         acc
 
     // member private this.Matching =
-    //     let f = fun a b -> Datalog<'T>.matching (a, b)
+    //     let f = fun a b -> Datalog.matching (a, b)
     //     this.Unify<'a>(f)
 
-    // member private this.Unification = this.Unify(fun a b -> Datalog<'T>.unify (a, b))
+    // member private this.Unification = this.Unify(fun a b -> Datalog.unify (a, b))
 
-    // member private this.AlphaEquiv = this.Unify(fun a b -> Datalog<'T>.alpha_equiv (a, b))
+    // member private this.AlphaEquiv = this.Unify(fun a b -> Datalog.alpha_equiv (a, b))
 
     member private this.MatchGeneralization k o_t (literal, o_lit) =
         (fun acc (lit', elt) ->
             try
                 // printfn "Matching on lit: %s elt: %A" (string_of_lit lit') elt
-                let subst = Datalog<'T>.matching ((lit', o_t), (literal, o_lit))
+                let subst = Datalog.matching (lit', o_t) (literal, o_lit) None
                 k acc lit' elt subst
             with UnifFailure ->
                 acc)
@@ -536,7 +510,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
     member private this.MatchSpecialization k o_t (literal, o_lit) =
         (fun acc (lit', elt) ->
             try
-                let subst = Datalog<'T>.matching ((literal, o_lit), (lit', o_t))
+                let subst = Datalog.matching (literal, o_lit) (lit', o_t) None
                 k acc lit' elt subst
             with UnifFailure ->
                 acc)
@@ -544,7 +518,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
     member private this.Unification (k: ('a -> literal<'T> -> 'U -> subst<'T> -> 'a)) o_t (literal, o_lit) =
         (fun acc (lit', elt) ->
             try
-                let subst = Datalog<'T>.unify ((lit', o_t), (literal, o_lit))
+                let subst = Datalog.unify (lit', o_t) (literal, o_lit) None
                 k acc lit' elt subst
             with UnifFailure ->
                 acc)
@@ -552,7 +526,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
     member private this.AlphaEquiv k o_t (literal, o_lit) =
         (fun acc (lit', elt) ->
             try
-                let subst = Datalog<'T>.alpha_equiv ((lit', o_t), (literal, o_lit))
+                let subst = Datalog.alpha_equiv (lit', o_t) (literal, o_lit) None
                 k acc lit' elt subst
             with UnifFailure ->
                 acc)
@@ -576,7 +550,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
                 // printfn "Retrieving generalizations on %s" ds_s
                 fold_dataset (this.MatchGeneralization k o_t (literal, o_lit)) acc s
             | Node(_, subtries), i ->
-                if Datalog<'T>.is_var literal[i] then
+                if Datalog.is_var literal[i] then
                     try_with subtries acc (Var 0) i
                 else
                     let acc' = try_with subtries acc (Var 0) i
@@ -598,7 +572,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
             match t, i with
             | Node(s, _), i when i = len -> fold_dataset (this.MatchSpecialization k o_t (literal, o_lit)) acc s
             | Node(_, subtries), i ->
-                if Datalog<'T>.is_var literal[i] then
+                if Datalog.is_var literal[i] then
                     subtries
                     |> iter_table
                     |> Seq.fold (fun acc (_, subtrie) -> search subtrie (i + 1) acc) acc
@@ -622,7 +596,7 @@ type Index<'T, 'U when 'T: equality and 'U: equality>() =
             match t, i with
             | Node(set, _), i when i = len -> fold_dataset (this.Unification k o_t (literal, o_lit)) acc set
             | Node(_, subtries), i ->
-                if Datalog<'T>.is_var literal[i] then (* fold on all subtries *)
+                if Datalog.is_var literal[i] then (* fold on all subtries *)
                     subtries
                     |> iter_table
                     |> Seq.fold (fun acc (_, subtrie) -> search subtrie (i + 1) acc) acc
@@ -743,7 +717,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
     member this.Contains clause =
         // TODO(Switch to F# Map for faster look-up)
-        assert Datalog<'T>.check_safe clause
+        assert Datalog.check_safe clause
         let res = all.ContainsKey(ClauseKey(clause))
         res
 
@@ -755,8 +729,8 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
                 let lit' =
                     try
                         let f = funs.[s]
-                        let lit' = lit |> Datalog<'T>.open_literal |> f
-                        let lit' = Datalog<'T>.of_soft_lit lit'
+                        let lit' = lit |> Datalog.open_literal |> f
+                        let lit' = Datalog.of_soft_lit lit'
                         lit'
                     with :? KeyNotFoundException ->
                         lit
@@ -776,7 +750,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
         if already_present then
             ()
-        else if Datalog<'T>.is_fact clause then
+        else if Datalog.is_fact clause then
             (facts.Add clause[0] clause |> ignore
 
              let s =
@@ -801,7 +775,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
              selected.RetrieveGeneralizations
                  (fun () _ clause' subst ->
-                     let clause'' = Datalog<'T>.remove_first_subst subst (clause', 0)
+                     let clause'' = Datalog.remove_first_subst subst (clause', 0)
                      let explanation = Resolution(clause', clause[0])
                      //  printfn "Clause is fact: adding new clause: %s" (string_of_clause clause'')
                      this.queue.Enqueue(AddClause(clause'', explanation)))
@@ -811,12 +785,12 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
             |> ignore
         else
             (assert (Array.length clause > 1)
-             let offset = Datalog<'T>.offset clause
+             let offset = Datalog.offset clause
 
              goals.RetrieveUnify
                  (fun () _goal () subst ->
-                     let new_goal = Datalog<'T>.subst_literal subst (clause[1], 0)
-                    //  printfn "Pushing new !!goal!! from clause processor: %s" (string_of_lit new_goal)
+                     let new_goal = Datalog.subst_literal subst (clause[1], 0)
+                     //  printfn "Pushing new !!goal!! from clause processor: %s" (string_of_lit new_goal)
                      this.queue.Enqueue(AddGoal new_goal))
                  ()
                  offset
@@ -827,7 +801,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
              facts.RetrieveSpecializations
                  (fun () fact _ subst ->
-                     let clause' = Datalog<'T>.remove_first_subst subst (clause, 0)
+                     let clause' = Datalog.remove_first_subst subst (clause, 0)
                      let explanation = Resolution(clause, fact)
                      this.queue.Enqueue(AddClause(clause', explanation)))
                  ()
@@ -837,7 +811,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
     member this.AddGoal literal =
         try
             // printfn "Processing goal: %s" (string_of_lit literal)
-            let offset = Datalog<'T>.offset [| literal |]
+            let offset = Datalog.offset [| literal |]
             goals.RetrieveRenaming (fun () _ _ _ -> raise Exit) () offset (literal, 0)
             // printfn "Length of goal handlers: %d" (List.length this.goal_handlers)
 
@@ -851,7 +825,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
             heads.RetrieveUnify
                 (fun () _head clause subst ->
-                    let new_goal = Datalog<'T>.subst_literal subst (clause[1], offset)
+                    let new_goal = Datalog.subst_literal subst (clause[1], offset)
                     this.queue.Enqueue(AddGoal new_goal))
                 ()
                 offset
@@ -874,14 +848,14 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
                 process_item item
 
     member this.Add(clause, ?expl) =
-        if not (Datalog<'T>.check_safe clause) then
+        if not (Datalog.check_safe clause) then
             raise UnsafeClause
 
         let expl = Option.defaultValue Axiom expl
         this.ProcessItems(AddClause(clause, expl))
 
     member this.AddFact(lit, ?expl) =
-        if not (Datalog<'T>.is_ground lit) then
+        if not (Datalog.is_ground lit) then
             raise UnsafeClause
 
         let expl = Option.defaultValue Axiom expl
@@ -899,8 +873,8 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
                 let terms =
                     List.map
                         (fun i ->
-                            let v = Datalog<'T>.mk_var i
-                            let t, _ = Datalog<'T>.deref subst v 1
+                            let v = Datalog.mk_var i
+                            let t, _ = Datalog.deref subst v 1
 
                             match t with
                             | Var _ -> failwith "Should be ground"
@@ -938,7 +912,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
 
     member this.SubscribeGoal handler =
         this.goal_handlers <- (handler :: goal_handlers)
-        // printfn "Added handler to goal_handlers. New length: %d" (List.length this.goal_handlers)
+    // printfn "Added handler to goal_handlers. New length: %d" (List.length this.goal_handlers)
 
     member this.Goals k =
         goals.Fold (fun () goal () -> k goal) ()
@@ -955,7 +929,7 @@ type Database<'T when 'T: equality>(all, facts, goals, selected, heads, fact_han
                 let explanation = all.[ClauseKey(clause)]
 
                 match explanation with
-                | Axiom when Datalog<'T>.is_fact clause ->
+                | Axiom when Datalog.is_fact clause ->
                     s.Remove(LiteralKey(clause[0])) |> ignore
                     s.Add(LiteralKey(clause[0]), ())
                 | ExtExplanation _
