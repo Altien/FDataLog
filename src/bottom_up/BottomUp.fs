@@ -187,11 +187,13 @@ module Datalog =
 
         head, body
 
-    let is_var (t: term<'T>) =
-        match t with
+    let is_var =
+        function
         | Var _ -> true
         | _ -> false
 
+    /// <summary>Checks if the literal <paramref name="t"/> is ground, that is, it consists solely of constants</summary>
+    /// <param name="t">The literal being checked for groundness</param>
     let is_ground (t: literal<'T>) =
         assert (not (is_var t[0]))
 
@@ -203,19 +205,10 @@ module Datalog =
 
         check t 1
 
+    /// <summary>Finds the arity of a literal, that is, the amount of terms it consists of
+    /// excluding the head</summary>
+    /// <param name="t">The literal whose arity is being checked</param>
     let arity (t: literal<'T>) = Array.length t - 1
-
-    let eq_term (t1: term<'T>) (t2: term<'T>) =
-        match t1, t2 with
-        | Var i, Var j -> i = j
-        | Const s1, Const s2 -> s1 = s2
-        | _ -> false
-
-    let eq_literal (l1: literal<'T>) (l2: literal<'T>) =
-        if Array.length l1 <> Array.length l2 then
-            false
-        else
-            Array.zip l1 l2 |> Array.forall (fun (t1, t2) -> eq_term t1 t2)
 
     let check_safe (clause: clause<'T>) =
         let rec check_head i =
@@ -237,19 +230,16 @@ module Datalog =
 
         and check_body_literal var literal k =
             if k = Array.length literal then false
-            else if eq_term literal[k] var then true
+            else if literal[k] = var then true
             else check_body_literal var literal (k + 1)
 
         check_head 1
 
+    /// <summary>Checks whether a clause is actually a fact, that is, consisting of a single,
+    /// ground term</summary>
+    /// <param name="clause">The clause being checked</param>
     let is_fact (clause: clause<'T>) =
         Array.length clause = 1 && is_ground clause[0]
-
-    let eq_clause c1 c2 =
-        if Array.length c1 <> Array.length c2 then
-            false
-        else
-            Array.zip c1 c2 |> Array.forall (fun (l1, l2) -> eq_literal l1 l2)
 
     let empty_subst: subst<'T> = SubstEmpty
 
@@ -258,25 +248,27 @@ module Datalog =
         | SubstEmpty -> true
         | _ -> false
 
+    /// <summary>Computes the highest number of variables in a goal or literal within the given clause</summary>
     let offset (clause: clause<'T>) =
-        let rec fold_lit terms offset i =
-            if i = Array.length terms then
-                offset
-            else
-                let offset =
-                    match terms[i] with
+        // Count the number of variables
+        let fold_lit lit =
+            lit
+            |> Array.tail
+            |> Array.fold
+                (fun offset term ->
+                    match term with
                     | Const _ -> offset
-                    | Var i -> max i offset
+                    | Var i -> max offset i)
+                0
 
-                fold_lit terms offset (i + 1)
+        // Find the highest number of variables among the literals
+        // in the clause 
+        let fold_lits clause =
+            clause
+            |> Array.map fold_lit 
+            |> Array.max
 
-        and fold_lits lits offset i =
-            if i = Array.length lits then
-                offset
-            else
-                fold_lits lits (fold_lit lits[i] offset 1) (i + 1)
-
-        let offset = fold_lits clause 0 0
+        let offset = fold_lits clause
         offset + 1
 
     let rec deref subst var offset =
@@ -289,7 +281,7 @@ module Datalog =
     let bind_subst subst v o_v t o_t =
         assert (is_var v)
 
-        if eq_term v t && o_v = o_t then
+        if v = t && o_v = o_t then
             subst
         else
             match v with
