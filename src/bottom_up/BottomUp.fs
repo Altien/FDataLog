@@ -210,6 +210,9 @@ module Datalog =
     /// <param name="t">The literal whose arity is being checked</param>
     let arity (t: literal<'T>) = Array.length t - 1
 
+    /// <summary>Ensures that the variables in a clause's head appear
+    /// in the clause's body</summary>
+    /// <param name="clause">The clause being checked</param>
     let check_safe (clause: clause<'T>) =
         let rec check_head i =
             if i = Array.length clause[0] then
@@ -230,7 +233,8 @@ module Datalog =
 
         and check_body_literal var literal k =
             if k = Array.length literal then false
-            else if literal[k] = var then true
+            else if literal[k] = var then
+                true
             else check_body_literal var literal (k + 1)
 
         check_head 1
@@ -248,7 +252,9 @@ module Datalog =
         | SubstEmpty -> true
         | _ -> false
 
-    /// <summary>Computes the highest number of variables in a goal or literal within the given clause</summary>
+    /// <summary>Find the lowest variable number that can be introduced without
+    /// causing a collision.</summary>
+    /// <param name="clause">The clause being checked</param>
     let offset (clause: clause<'T>) =
         // Count the number of variables
         let fold_lit lit =
@@ -271,6 +277,18 @@ module Datalog =
         let offset = fold_lits clause
         offset + 1
 
+    /// <summary>Dereference or "unwrap" a binding between <paramref name="var"/> at offset <paramref name="offset"/>
+    /// and some term. If the <paramref name="subst"/> happens to be empty, the variable and its offset
+    /// will be returned as they are. If <paramref name="var"/> happens to be a constant (which may happen during a
+    /// recursive call), the constant and the corresponding offset will be returned. If <paramref name="var"/> and
+    /// <paramref name="offset"/> are found to match the binding in <paramref name="subst"/>, this function
+    /// is called recursively with <paramref name="var"/> and <paramref name="offset"/> being replaced by the bound
+    /// term and offset respectively. If the bound term is a constant, the constant will be returned. If the bound term
+    /// is a variable, this function looks for a substitution that can be applied to the variable within <paramref name="subst"/>.
+    /// If it eventually finds an empty substitution, the substituted variable is returned as is with its corresponding offset.</summary>
+    /// <param name="subst">The substitution being dereferenced</param>
+    /// <param name="var">The variable for which <paramref name="subst"/> contains a binding</param>
+    /// <param name="offset">The offset of the variable <paramref name="var"/></param>
     let rec deref subst var offset =
         match subst, var with
         | _, Const _ -> var, offset
@@ -278,9 +296,20 @@ module Datalog =
         | SubstBind(_, _, _, _, subst'), _ -> deref subst' var offset
         | SubstEmpty, _ -> var, offset
 
+    /// <summary>Wrap a substitution (which may be empty) in a binding between variable <paramref name="v"/>
+    /// and term <paramref name="t"/>. Note that this function throws an exception if <paramref name="v"/>
+    /// is not a variable but is, instead, a constant.</summary>
+    /// <param name="subst">The substitution being wrapped</param>
+    /// <param name="v">The variable being bound</param>
+    /// <param name="o_v">The offset of variable <paramref name="v"/></param>
+    /// <param name="t">The term being bound to</param>
+    /// <param name="o_t">The offset of term <paramref name="t"/></param>
     let bind_subst subst v o_v t o_t =
         assert (is_var v)
 
+        // If v and t are identical variables with identical offsets
+        // there is no need to wrap the current substitution, as
+        // dereferencing would only result in the variable v itself
         if v = t && o_v = o_t then
             subst
         else
@@ -288,38 +317,63 @@ module Datalog =
             | Var i -> SubstBind(i, o_v, t, o_t, subst)
             | Const _ -> failwith "Cannot bind to constant"
 
-    let matching (l1, o1) (l2, o2) subst =
+    let match_processing handle_pair subst l1 l2  =
+        let (l1, o1) = l1
+        let (l2, o2) = l2
+        let process_pair subst (i1, i2) =
+            let t1, o1' = deref subst i1 o1
+            let t2, o2' = deref subst i2 o2
+            handle_pair subst t1 o1' t2 o2'
+        Array.zip l1 l2
+        |> Array.fold process_pair subst
+
+    /// <summary>Matches <paramref name="pattern"/> against <paramref name="lit"/>.
+    /// Raises UnifFailure in the case of mismatch.</summary>
+    /// <param name="pattern">The pattern to match against</param>
+    /// <param name="lit">The literal being matched against <paramref name="pattern"/></param>
+    /// <param name="subst">An optional substitution used to dereference variables in
+    /// <paramref name="pattern"/> and <paramref name="lit"/>, and upon which the match
+    /// result is wrapped</param>
+    let matching pattern lit subst =
         // printfn "Begin match, o1: %d, o2: %d" o1 o2
         let subst = Option.defaultValue empty_subst subst
+
+        let (l1, o1) = pattern
+        let (l2, o2) = lit
 
         if Array.length l1 <> Array.length l2 then
             raise UnifFailure
         else
             let match_pair subst t1 o1' t2 o2' =
-                // printfn "Details: subst: %A, t1: %A, o1': %d, t2: %A, o2': %d" subst t1 o1' t2 o2'
                 match t1, t2 with
                 | Const s1, Const s2 ->
-                    // printfn "const, const"
                     if s1 = s2 then subst else raise UnifFailure
                 | Var i, Var j when i = j && o1' = o2' ->
-                    // printfn "var, var"
                     subst
                 | Var _, _ ->
-                    // printfn "var, _"
                     bind_subst subst t1 o1' t2 o2'
                 | Const _, Var _ ->
-                    // printfn "const, var"
                     raise UnifFailure
+                
+            match_processing match_pair subst pattern lit
+            // let process_pair subst (i1, i2) =
+            //     let t1, o1' = deref subst i1 o1
+            //     let t2, o2' = deref subst i2 o2
+            //     match_pair subst t1 o1' t2 o2'
 
-            let process_pair subst (i1, i2) =
-                let t1, o1' = deref subst i1 o1
-                let t2, o2' = deref subst i2 o2
-                match_pair subst t1 o1' t2 o2'
+            // Array.zip l1 l2 |> Array.fold process_pair subst
 
-            Array.zip l1 l2 |> Array.fold process_pair subst
-
-    let unify (l1, o1) (l2, o2) subst =
+    ///<summary>Tries to unify <paramref name="lit1"/> and <paramref name="lit2"/>.
+    /// Raises UnifFailure in case of mismatch.</summary>
+    /// <param name="lit1">The first literal being unified</param>
+    /// <param name="lit2">The second literal being unified</param>
+    /// <param name="subst">An optional substitution for dereferencing
+    /// <paramref name="lit1"/> and <paramref name="lit2"/> and upon which
+    /// the unification result is wrapped</param>
+    let unify lit1 lit2 subst =
         let subst = Option.defaultValue empty_subst subst
+        let (l1, o1) = lit1
+        let (l2, o2) = lit2
 
         if Array.length l1 <> Array.length l2 then
             raise UnifFailure
@@ -331,15 +385,26 @@ module Datalog =
                 | Var _, _ -> bind_subst subst t1 o1' t2 o2'
                 | Const _, Var _ -> bind_subst subst t2 o2' t1 o1'
 
-            let process_pair subst (i1, i2) =
-                let t1, o1' = deref subst i1 o1
-                let t2, o2' = deref subst i2 o2
-                unif_pair subst t1 o1' t2 o2'
+            match_processing unif_pair subst lit1 lit2
+            // let process_pair subst (i1, i2) =
+            //     let t1, o1' = deref subst i1 o1
+            //     let t2, o2' = deref subst i2 o2
+            //     unif_pair subst t1 o1' t2 o2'
 
-            Array.zip l1 l2 |> Array.fold process_pair subst
+            // Array.zip l1 l2 |> Array.fold process_pair subst
 
-    let alpha_equiv (l1, o1) (l2, o2) subst =
+    ///<summary>If <paramref name="lit1"/> and <paramref name="lit2"/> are alpha equivalent,
+    /// we return the corresponding renaming</summary>
+    /// <param name="lit1">The literal to be checked for alpha equivalence with <paramref name="lit2"/></param>
+    /// <param name="lit2">The literal to be checked for alpha equivalence with <paramref name="lit1"/></param>
+    /// <param name="subst">An optional substitution for dereferencing
+    /// <paramref name="lit1"/> and <paramref name="lit2"/> and upon which
+    /// the result is wrapped</param>
+    let alpha_equiv lit1 lit2 subst =
         let subst = Option.defaultValue empty_subst subst
+
+        let (l1, o1) = lit1
+        let (l2, o2) = lit2
 
         if Array.length l1 <> Array.length l2 then
             raise UnifFailure
@@ -351,13 +416,14 @@ module Datalog =
                 | Var _, Var _ -> bind_subst subst t1 o1' t2 o2'
                 | Const _, Var _
                 | Var _, Const _ -> raise UnifFailure
+            
+            match_processing unif_pair subst lit1 lit2
+            // let process_pair subst (i1, i2) =
+            //     let t1, o1' = deref subst i1 o1
+            //     let t2, o2' = deref subst i2 o2
+            //     unif_pair subst t1 o1' t2 o2'
 
-            let process_pair subst (i1, i2) =
-                let t1, o1' = deref subst i1 o1
-                let t2, o2' = deref subst i2 o2
-                unif_pair subst t1 o1' t2 o2'
-
-            Array.zip l1 l2 |> Array.fold process_pair subst
+            // Array.zip l1 l2 |> Array.fold process_pair subst
 
     let shift_lit lit offset =
         if offset = 0 then
